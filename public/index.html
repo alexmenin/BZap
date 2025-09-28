@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BZap - Gerenciador de Instâncias WhatsApp</title>
+    <link rel="stylesheet" href="fontawesome.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1><i class="fab fa-whatsapp"></i> BZap Manager</h1>
+                <p>Gerenciador de Instâncias WhatsApp</p>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- Seção de Criação de Instância -->
+            <section class="create-instance-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-plus-circle"></i> Nova Instância</h2>
+                    </div>
+                    <div class="card-body">
+                        <form id="createInstanceForm" class="form">
+                            <div class="form-group">
+                                <label for="instanceName">Nome da Instância</label>
+                                <input type="text" id="instanceName" name="name" placeholder="Ex: Minha Empresa" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="webhookUrl">Webhook URL (Opcional)</label>
+                                <input type="url" id="webhookUrl" name="webhookUrl" placeholder="https://exemplo.com/webhook">
+                            </div>
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-plus"></i> Criar Instância
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Seção de Listagem de Instâncias -->
+            <section class="instances-section">
+                <div class="card">
+                    <div class="card-header">
+                        <h2><i class="fas fa-list"></i> Instâncias Ativas</h2>
+                        <button id="refreshInstances" class="btn btn-secondary">
+                            <i class="fas fa-sync-alt"></i> Atualizar
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="instancesList" class="instances-grid">
+                            <!-- Instâncias serão carregadas aqui -->
+                        </div>
+                        <div id="loadingInstances" class="loading" style="display: none;">
+                            <i class="fas fa-spinner fa-spin"></i> Carregando instâncias...
+                        </div>
+                        <div id="noInstances" class="empty-state" style="display: none;">
+                            <i class="fas fa-inbox"></i>
+                            <p>Nenhuma instância encontrada</p>
+                            <p class="text-muted">Crie sua primeira instância acima</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Modal para QR Code -->
+        <div id="qrModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-qrcode"></i> QR Code - <span id="qrInstanceName"></span></h3>
+                    <button class="modal-close" id="closeQrModal">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div id="qrCodeContainer" class="qr-container">
+                        <!-- QR Code será exibido aqui -->
+                    </div>
+                    <div class="qr-instructions">
+                        <p><strong>Como conectar:</strong></p>
+                        <ol>
+                            <li>Abra o WhatsApp no seu celular</li>
+                            <li>Toque em <strong>Mais opções</strong> > <strong>Aparelhos conectados</strong></li>
+                            <li>Toque em <strong>Conectar um aparelho</strong></li>
+                            <li>Aponte seu celular para esta tela para capturar o código</li>
+                        </ol>
+                    </div>
+                    <div class="qr-actions">
+                        <button id="regenerateQr" class="btn btn-primary">
+                            <i class="fas fa-sync-alt"></i> Gerar Novo QR
+                        </button>
+                        <button id="downloadQr" class="btn btn-secondary">
+                            <i class="fas fa-download"></i> Baixar QR
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast para notificações -->
+        <div id="toast" class="toast">
+            <div class="toast-content">
+                <span id="toastMessage"></span>
+                <button id="toastClose" class="toast-close">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="qr-creator.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

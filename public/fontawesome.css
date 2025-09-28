@@ -1,0 +1,107 @@
+/* Font Awesome Icons - Local Version */
+/* Apenas os ícones necessários para o projeto */
+
+.fa, .fas {
+  font-family: 'Font Awesome 6 Free';
+  font-weight: 900;
+  font-style: normal;
+  font-variant: normal;
+  text-rendering: auto;
+  line-height: 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Ícones usando Unicode */
+.fa-plus::before {
+  content: "\002B"; /* + symbol */
+}
+
+.fa-qrcode::before {
+  content: "\25A0"; /* Black square */
+}
+
+.fa-refresh::before,
+.fa-sync::before {
+  content: "\21BB"; /* Clockwise rotation */
+}
+
+.fa-download::before {
+  content: "\2193"; /* Down arrow */
+}
+
+.fa-times::before,
+.fa-close::before {
+  content: "\00D7"; /* × symbol */
+}
+
+.fa-trash::before {
+  content: "\1F5D1"; /* Trash can */
+}
+
+.fa-play::before {
+  content: "\25B6"; /* Play triangle */
+}
+
+.fa-stop::before {
+  content: "\25A0"; /* Stop square */
+}
+
+.fa-check::before {
+  content: "\2713"; /* Check mark */
+}
+
+.fa-exclamation-triangle::before {
+  content: "\26A0"; /* Warning triangle */
+}
+
+.fa-info-circle::before {
+  content: "\2139"; /* Info symbol */
+}
+
+.fa-spinner::before {
+  content: "\25CB"; /* Circle */
+}
+
+/* Animação de rotação para spinner */
+.fa-spin {
+  animation: fa-spin 2s infinite linear;
+}
+
+@keyframes fa-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Tamanhos dos ícones */
+.fa-lg {
+  font-size: 1.33333em;
+  line-height: 0.75em;
+  vertical-align: -0.0667em;
+}
+
+.fa-2x {
+  font-size: 2em;
+}
+
+.fa-3x {
+  font-size: 3em;
+}
+
+/* Margem para ícones */
+.fa + span,
+span + .fa {
+  margin-left: 0.5em;
+}
+
+.fa:first-child {
+  margin-right: 0.5em;
+}
+
+.fa:last-child {
+  margin-left: 0.5em;
+}
