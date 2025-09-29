@@ -164,7 +164,7 @@ router.post('/:id/connect', async (req: Request, res: Response) => {
     console.log('🔍 [ROUTE] POST /connect chamado para instância:', id);
     Logger.info(`🔌 Conectando instância: ${id}`);
     
-    // Obtém a instância para escutar eventos
+    // Obtém a instância
     console.log('🔍 [ROUTE] Obtendo dados da instância...');
     const instanceData = await instanceManager.getInstance(id);
     if (!instanceData) {
@@ -192,85 +192,37 @@ router.post('/:id/connect', async (req: Request, res: Response) => {
 
     // Se já está conectando, retorna imediatamente
     if (instanceData.status === 'connecting') {
-      console.log('🔍 [ROUTE] Instância já conectando - retornando erro');
-      return res.status(400).json({
-        error: 'Conexão já está em andamento',
-        code: 'ALREADY_CONNECTING'
+      console.log('🔍 [ROUTE] Instância já conectando - retornando status atual');
+      return res.json({
+        success: true,
+        message: 'Conexão já está em andamento',
+        data: {
+          id,
+          status: 'connecting'
+        }
       });
     }
 
     console.log('🔍 [ROUTE] Iniciando processo de conexão...');
-    // Inicia o processo de conexão
+    // Inicia o processo de conexão de forma assíncrona
     console.log('🔍 [ROUTE] Chamando instanceManager.connectInstance...');
-    const connectPromise = instanceManager.connectInstance(id);
-    console.log('🔍 [ROUTE] connectInstance chamado, aguardando resultado...');
     
-    // Aguarda o QR code ser gerado via evento connection.update
-    const qrCodePromise = new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Timeout aguardando QR code'));
-      }, 30000); // 30 segundos de timeout
-
-      // Escuta o evento de QR code da instância
-      const onQrCode = (qrCode: string) => {
-        clearTimeout(timeout);
-        instanceManager.off('instance:qr_code', onQrCode);
-        resolve(qrCode);
-      };
-
-      instanceManager.on('instance:qr_code', (instanceId: string, qrCode: string) => {
-        if (instanceId === id) {
-          onQrCode(qrCode);
-        }
-      });
+    // Inicia a conexão sem aguardar o resultado
+    instanceManager.connectInstance(id).catch(error => {
+      Logger.error(`❌ Erro na conexão assíncrona da instância ${id}:`, error);
     });
-
-    // Executa conexão e aguarda QR code em paralelo
-    const [connectResult] = await Promise.allSettled([connectPromise, qrCodePromise]);
     
-    if (connectResult.status === 'rejected') {
-      Logger.error(`❌ Erro na conexão da instância ${id}:`, connectResult.reason);
-      return res.status(500).json({
-        error: 'Erro ao iniciar conexão',
-        code: 'CONNECTION_ERROR'
-      });
-    }
-
-    const result = connectResult.value;
-    if (!result.success) {
-      return res.status(400).json({
-        error: result.error,
-        code: result.code
-      });
-    }
-
-    // Aguarda o QR code ser gerado
-    try {
-      const qrCode = await qrCodePromise;
-      
-      return res.json({
-        success: true,
-        message: 'Conexão iniciada e QR code gerado com sucesso',
-        data: {
-          id,
-          status: 'qr_code',
-          qrCode: qrCode
-        }
-      });
-    } catch (qrError) {
-      Logger.warn(`⚠️ Timeout aguardando QR code para instância ${id}`);
-      
-      // Retorna sucesso mesmo sem QR code, pois a conexão foi iniciada
-      return res.json({
-        success: true,
-        message: 'Conexão iniciada com sucesso',
-        data: {
-          id,
-          status: result.status,
-          qrCode: result.qrCode
-        }
-      });
-    }
+    console.log('🔍 [ROUTE] Conexão iniciada, retornando resposta imediata');
+    
+    // Retorna imediatamente - QR code e status updates virão via SSE/Webhook
+    return res.json({
+      success: true,
+      message: 'Processo de conexão iniciado com sucesso',
+      data: {
+        id,
+        status: 'connecting'
+      }
+    });
 
   } catch (error) {
     Logger.error(`❌ Erro ao conectar instância ${req.params.id}:`, error);
@@ -312,75 +264,23 @@ router.post('/:id/reset', async (req: Request, res: Response) => {
     }
 
     console.log('🔄 [ROUTE] Iniciando nova conexão após reset...');
-    // Inicia nova conexão
-    const connectPromise = instanceManager.connectInstance(id);
     
-    // Aguarda o QR code ser gerado via evento connection.update
-    const qrCodePromise = new Promise<string>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('Timeout aguardando QR code após reset'));
-      }, 30000); // 30 segundos de timeout
-
-      // Escuta o evento de QR code da instância
-      const onQrCode = (qrCode: string) => {
-        clearTimeout(timeout);
-        instanceManager.off('instance:qr_code', onQrCode);
-        resolve(qrCode);
-      };
-
-      instanceManager.on('instance:qr_code', (instanceId: string, qrCode: string) => {
-        if (instanceId === id) {
-          onQrCode(qrCode);
-        }
-      });
+    // Inicia nova conexão de forma assíncrona
+    instanceManager.connectInstance(id).catch(error => {
+      Logger.error(`❌ Erro na reconexão assíncrona da instância ${id}:`, error);
     });
-
-    // Executa conexão e aguarda QR code em paralelo
-    const [connectResult] = await Promise.allSettled([connectPromise, qrCodePromise]);
     
-    if (connectResult.status === 'rejected') {
-      Logger.error(`❌ Erro no reset da instância ${id}:`, connectResult.reason);
-      return res.status(500).json({
-        error: 'Erro ao reiniciar conexão',
-        code: 'RESET_ERROR'
-      });
-    }
-
-    const result = connectResult.value;
-    if (!result.success) {
-      return res.status(400).json({
-        error: result.error,
-        code: result.code
-      });
-    }
-
-    // Aguarda o QR code ser gerado
-    try {
-      const qrCode = await qrCodePromise;
-      
-      return res.json({
-        success: true,
-        message: 'Conexão reiniciada e novos QR codes gerados com sucesso',
-        data: {
-          id,
-          status: 'qr_code',
-          qrCode: qrCode
-        }
-      });
-    } catch (qrError) {
-      Logger.warn(`⚠️ Timeout aguardando QR code após reset para instância ${id}`);
-      
-      // Retorna sucesso mesmo sem QR code, pois a conexão foi reiniciada
-      return res.json({
-        success: true,
-        message: 'Conexão reiniciada com sucesso',
-        data: {
-          id,
-          status: result.status,
-          qrCode: result.qrCode
-        }
-      });
-    }
+    console.log('🔄 [ROUTE] Reset iniciado, retornando resposta imediata');
+    
+    // Retorna imediatamente - QR code e status updates virão via SSE/Webhook
+    return res.json({
+      success: true,
+      message: 'Processo de reset iniciado com sucesso',
+      data: {
+        id,
+        status: 'connecting'
+      }
+    });
 
   } catch (error) {
     Logger.error(`❌ Erro ao reiniciar instância ${req.params.id}:`, error);

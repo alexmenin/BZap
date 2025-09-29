@@ -219,7 +219,16 @@ export class AuthStateManager {
         return null;
       }
       const data = JSON.parse(await fs.promises.readFile(this.credsPath, 'utf-8'));
-      return this.deserializeCreds(data);
+      const creds = this.deserializeCreds(data);
+      
+      // ✅ Validar campos obrigatórios após pair-success
+      if (creds.registered && (!creds.me || !creds.account || !creds.signalIdentities || !creds.platform)) {
+        Logger.warn(`❌ Credenciais inválidas para ${this.instanceId}: campos obrigatórios ausentes após pair-success`);
+        Logger.warn(`registered: ${creds.registered}, me: ${!!creds.me}, account: ${!!creds.account}, signalIdentities: ${!!creds.signalIdentities}, platform: ${!!creds.platform}`);
+        return null; // Força novo QR
+      }
+      
+      return creds;
     } catch (error) {
       Logger.error(`❌ Erro ao carregar credenciais para ${this.instanceId}:`, error);
       return null;
@@ -363,6 +372,15 @@ export class AuthStateManager {
       nextPreKeyId: creds.nextPreKeyId,
       firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
       serverHasPreKeys: creds.serverHasPreKeys,
+      // Campos obrigatórios seguindo padrão Baileys
+      processedHistoryMessages: creds.processedHistoryMessages || [],
+      accountSyncCounter: creds.accountSyncCounter || 0,
+      accountSettings: creds.accountSettings || { unarchiveChats: false },
+      registered: creds.registered || false,
+      // Campos opcionais mas importantes para persistência
+      pairingCode: creds.pairingCode || null,
+      lastPropHash: creds.lastPropHash || null,
+      routingInfo: creds.routingInfo || null,
       account: creds.account || null,
       me: creds.me || null,
       signalIdentities: creds.signalIdentities || [],
@@ -403,8 +421,9 @@ export class AuthStateManager {
       accountSettings: data.accountSettings || { unarchiveChats: false },
       registered: data.registered || false,
       // Campos opcionais
-      pairingCode: data.pairingCode,
-      lastPropHash: data.lastPropHash,
+      pairingCode: data.pairingCode || undefined,
+      lastPropHash: data.lastPropHash || undefined,
+      routingInfo: data.routingInfo || undefined,
       account: data.account || undefined,
       me: data.me || undefined,
       signalIdentities: data.signalIdentities || undefined,

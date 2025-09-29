@@ -82,13 +82,18 @@ function generateRegistrationId(): number {
 export function initAuthCreds(): AuthenticationCreds {
   const identityKey = Curve25519.generateKeyPair();
   
+  // Generate signedPreKey with valid signature
+  const preKeyPair = Curve25519.generateKeyPair();
+  const pubKeyWithPrefix = Buffer.concat([Buffer.from([0x05]), Buffer.from(preKeyPair.public)]);
+  const signature = Curve25519.sign(Buffer.from(identityKey.private), pubKeyWithPrefix);
+  
   return {
     noiseKey: Curve25519.generateKeyPair(),
     pairingEphemeralKeyPair: Curve25519.generateKeyPair(),
     signedIdentityKey: identityKey,
     signedPreKey: {
-      keyPair: Curve25519.generateKeyPair(),
-      signature: new Uint8Array(64), // Placeholder - seria assinado com identityKey
+      keyPair: preKeyPair,
+      signature: new Uint8Array(signature), // ✅ Assinatura válida em vez de zerada
       keyId: 1
     },
     registrationId: generateRegistrationId(),

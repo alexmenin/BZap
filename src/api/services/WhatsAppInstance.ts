@@ -6,7 +6,7 @@ import { makeNoiseHandler } from '../../connection/NoiseHandler';
 import { QRCodeGenerator } from '../../utils/QRCodeGenerator';
 import { WebSocketClient } from '../../connection/WebSocketClient';
 import { KeyManager } from '../../crypto/KeyManager';
-
+import WebSocket from 'ws';
 import { SessionManager } from './SessionManager';
 import { CacheManager } from './CacheManager';
 import { InstanceConfig, InstanceData, OperationResult } from './InstanceManager';
@@ -187,6 +187,22 @@ export class WhatsAppInstance extends EventEmitter {
         };
       }
 
+      // ✅ PROTEÇÃO: Evita múltiplos WebSocketClient simultâneos
+      if (this.webSocket && (this.isWebSocketActive())) {
+        Logger.debug(`⚠️ Já existe WebSocket ativo para instância ${this.config.id}; ignorando novo connect()`);
+        return {
+          success: false,
+          error: 'WebSocket já está ativo',
+          code: 'WEBSOCKET_ALREADY_ACTIVE'
+        };
+      }
+
+      // ✅ CLEANUP: Remove WebSocket anterior se existir
+      if (this.webSocket) {
+        Logger.debug(`🧹 Fazendo cleanup do WebSocket anterior para instância ${this.config.id}`);
+        await this.cleanupWebSocket();
+      }
+
       Logger.info(`🔌 Iniciando conexão da instância: ${this.config.id}`);
       console.log('🔍 [WHATSAPP_INSTANCE] Atualizando status para connecting');
       
@@ -324,6 +340,22 @@ export class WhatsAppInstance extends EventEmitter {
         return await this.startNewAuthentication();
       }
       
+      // ✅ PROTEÇÃO: Evita múltiplos WebSocketClient simultâneos
+      if (this.webSocket && this.isWebSocketActive()) {
+        Logger.debug(`⚠️ WebSocket já ativo em connectWithSavedCredentials para instância ${this.config.id}`);
+        return {
+          success: false,
+          error: 'WebSocket já está ativo',
+          code: 'WEBSOCKET_ALREADY_ACTIVE'
+        };
+      }
+
+      // ✅ CLEANUP: Remove WebSocket anterior se existir
+      if (this.webSocket) {
+        Logger.debug(`🧹 Cleanup do WebSocket anterior em connectWithSavedCredentials para instância ${this.config.id}`);
+        await this.cleanupWebSocket();
+      }
+      
       // Inicializa WebSocket com estado de autenticação Baileys
       console.log('🔍 [WHATSAPP_INSTANCE] AuthState antes de criar WebSocket:', !!this.authState);
       console.log('🔍 [WHATSAPP_INSTANCE] AuthState.creds:', !!this.authState?.creds);
@@ -388,6 +420,22 @@ export class WhatsAppInstance extends EventEmitter {
       // Limpa dados de usuário antigos
       this.phoneNumber = undefined;
       this.profileName = undefined;
+      
+      // ✅ PROTEÇÃO: Evita múltiplos WebSocketClient simultâneos
+      if (this.webSocket && this.isWebSocketActive()) {
+        Logger.debug(`⚠️ WebSocket já ativo em startNewAuthentication para instância ${this.config.id}`);
+        return {
+          success: false,
+          error: 'WebSocket já está ativo',
+          code: 'WEBSOCKET_ALREADY_ACTIVE'
+        };
+      }
+
+      // ✅ CLEANUP: Remove WebSocket anterior se existir
+      if (this.webSocket) {
+        Logger.debug(`🧹 Cleanup do WebSocket anterior em startNewAuthentication para instância ${this.config.id}`);
+        await this.cleanupWebSocket();
+      }
       
       // Inicializa WebSocket com estado de autenticação Baileys
       console.log('🔍 [WHATSAPP_INSTANCE] AuthState antes de criar WebSocket:', !!this.authState);
@@ -769,11 +817,32 @@ export class WhatsAppInstance extends EventEmitter {
         }
       }
       
-      // Se é um novo login
+      // Se é um novo login (pair-success processado)
       if (update.isNewLogin) {
         Logger.info(`✅ Novo login detectado via connection.update para instância: ${this.config.id}`);
+        
+        // Limpa QR code e timer
         this.qrCode = undefined;
         this.qrCodeExpiresAt = undefined;
+        if (this.qrCodeTimer) {
+          clearTimeout(this.qrCodeTimer);
+          this.qrCodeTimer = undefined;
+        }
+        
+        // Marca como conectado após pair-success
+        this.updateStatus('connected');
+        this.lastSeen = new Date();
+        this.startHeartbeat();
+        
+        // Emite evento de conexão bem-sucedida
+        this.emit('connected', {
+          instanceId: this.config.id,
+          phoneNumber: this.phoneNumber || 'Desconhecido',
+          profileName: this.profileName || 'WhatsApp User',
+          isNewLogin: true
+        });
+        
+        Logger.info(`🎉 Instância ${this.config.id} conectada com sucesso após pair-success`);
       }
       
       // Se há mudança de estado de conexão
@@ -790,11 +859,17 @@ export class WhatsAppInstance extends EventEmitter {
            }
          } else if (update.connection === 'open') {
            Logger.info(`✅ Conexão estabelecida com sucesso via WebSocket para instância: ${this.config.id}`);
-           console.log(`✅ [WHATSAPP_INSTANCE] Conexão aberta - atualizando para connected`);
-           this.updateStatus('connected');
-           this.lastSeen = new Date();
-           this.startHeartbeat();
-           this.emit('connected', update);
+           
+           // ✅ CORREÇÃO: Só atualiza para connected se não estiver já conectado
+           if (this.status !== 'connected') {
+             console.log(`✅ [WHATSAPP_INSTANCE] Conexão aberta - atualizando para connected`);
+             this.updateStatus('connected');
+             this.lastSeen = new Date();
+             this.startHeartbeat();
+             this.emit('connected', update);
+           } else {
+             console.log(`⚠️ [WHATSAPP_INSTANCE] Já conectado, ignorando connection.update duplicado`);
+           }
          }
        }
     });
@@ -1336,9 +1411,9 @@ export class WhatsAppInstance extends EventEmitter {
       // Limpa detector de eventos
       this.connectionEventDetector.cleanup();
       
+      // ✅ MELHORIA: Usa cleanup robusto do WebSocket
       if (this.webSocket) {
-        await this.webSocket.disconnect();
-        this.webSocket = undefined;
+        await this.cleanupWebSocket();
       }
       
       this.updateStatus('disconnected');
@@ -1386,14 +1461,17 @@ export class WhatsAppInstance extends EventEmitter {
    * Atualiza status da instância
    */
   private updateStatus(newStatus: ConnectionStatus): void {
+    if (this.status === newStatus) {
+      console.debug(`⚠️ Status já é ${newStatus}, ignorando atualização duplicada`);
+      return;
+    }
+
     const oldStatus = this.status;
     this.status = newStatus;
     this.updatedAt = new Date();
     
-    if (oldStatus !== newStatus) {
-      Logger.info(`📊 Status da instância ${this.config.id}: ${oldStatus} → ${newStatus}`);
-      this.emit('status_changed', newStatus, oldStatus);
-    }
+    Logger.info(`📊 Status da instância ${this.config.id}: ${oldStatus} → ${newStatus}`);
+    this.emit('status_changed', newStatus, oldStatus);
   }
 
   /**
@@ -1452,10 +1530,16 @@ export class WhatsAppInstance extends EventEmitter {
          // Debug logs removidos para evitar spam
          // console.log(`🔍 [DEBUG] ATENÇÃO: Marcando instância como 'connected'!`);
          // console.log(`🔍 [DEBUG] Stack trace da conexão:`, new Error().stack?.split('\n').slice(1, 8).join('\n'));
-         this.updateStatus('connected');
-         this.lastSeen = new Date();
-         this.startHeartbeat();
-         this.emit('connected', update);
+         
+         // ✅ CORREÇÃO: Só atualiza para connected se não estiver já conectado
+         if (this.status !== 'connected') {
+           this.updateStatus('connected');
+           this.lastSeen = new Date();
+           this.startHeartbeat();
+           this.emit('connected', update);
+         } else {
+           console.log(`⚠️ [CONNECTION_EVENT_DETECTOR] Já conectado, ignorando connection.update duplicado`);
+         }
        } else if (update.connection === ConnectionState.close) {
          // Debug log removido para evitar spam
          // console.log(`🔍 [DEBUG] Marcando instância como 'disconnected'`);
@@ -1506,8 +1590,12 @@ export class WhatsAppInstance extends EventEmitter {
   public destroy(): void {
     this.clearTimers();
     
+    // ✅ MELHORIA: Usa cleanup robusto do WebSocket
     if (this.webSocket) {
+      // Usa versão síncrona para destroy (não pode ser async)
+      this.webSocket.removeAllListeners();
       this.webSocket.disconnect();
+      this.webSocket = undefined;
     }
     
     // Limpa detector de eventos
@@ -1515,5 +1603,53 @@ export class WhatsAppInstance extends EventEmitter {
     this.connectionEventDetector.removeAllListeners();
     
     this.removeAllListeners();
+  }
+
+  /**
+   * ✅ MÉTODO AUXILIAR: Verifica se WebSocket está ativo (conectando ou conectado)
+   */
+  private isWebSocketActive(): boolean {
+    if (!this.webSocket) return false;
+    
+    // Verifica se está conectado
+    if (this.webSocket.isConnected) return true;
+    
+    // Verifica se o WebSocket interno existe e está em estado ativo
+    const ws = (this.webSocket as any).ws;
+    if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) {
+      return true;
+    }
+    
+    return false;
+  }
+
+  /**
+   * ✅ MÉTODO AUXILIAR: Cleanup robusto do WebSocket anterior
+   */
+  private async cleanupWebSocket(): Promise<void> {
+    if (!this.webSocket) return;
+    
+    try {
+      Logger.debug(`🧹 Iniciando cleanup robusto do WebSocket para instância ${this.config.id}`);
+      
+      // Remove todos os listeners do WebSocket atual
+      this.webSocket.removeAllListeners();
+      
+      // Desconecta o WebSocket
+      this.webSocket.disconnect();
+      
+      // Aguarda um pouco para garantir que a desconexão seja processada
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Remove referência
+      this.webSocket = undefined;
+      
+      Logger.debug(`✅ Cleanup do WebSocket concluído para instância ${this.config.id}`);
+      
+    } catch (error) {
+      Logger.error(`❌ Erro durante cleanup do WebSocket para instância ${this.config.id}:`, error);
+      // Força remoção da referência mesmo com erro
+      this.webSocket = undefined;
+    }
   }
 }

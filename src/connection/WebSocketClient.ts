@@ -10,7 +10,7 @@ import { QRCodeGenerator } from '../utils/QRCodeGenerator';
 import { waproto } from '@wppconnect/wa-proto';
 import { createAuthPayload, SocketConfig } from '../utils/PayloadGenerator';
 import { AuthenticationState, AuthenticationCreds } from '../auth/AuthStateManager';
-import { configureSuccessfulPairing, getBinaryNodeChild } from '../utils/ValidateConnection';
+import { configureSuccessfulPairing, getBinaryNodeChild, generateRegistrationNode } from '../utils/ValidateConnection';
 import { uploadPreKeysToServerIfRequired } from '../utils/PreKeyManager';
 import { encodeBinaryNode } from '../protocol/WABinary/encode';
 import { binaryNodeToString } from '../protocol/WABinary/decode';
@@ -111,6 +111,62 @@ export class WebSocketClient extends EventEmitter {
   private streamEnded = false; // Flag para evitar processamento repetido de xmlstreamend
   private connectionClosed = false; // Flag para evitar múltiplas emissões de eventos 'close'
   private lastCloseReason?: string; // Armazena o último motivo de fechamento para evitar duplicatas
+  private _serverEventsSetup = false; // ✅ Flag para evitar handlers duplicados
+  private passiveIqSent = false; // ✅ Flag para evitar passive IQ duplicado
+  private prekeySyncInFlight = false; // ✅ Flag para evitar upload duplicado de pre-keys
+  private _successHandled = false; // ✅ Flag para evitar múltiplos processamentos do evento success
+
+  // ✅ CORREÇÃO 2: Upload de pre-keys com lock para evitar concorrência/duplicidade
+  private async uploadPreKeysToServerIfRequired(): Promise<void> {
+    if (this.prekeySyncInFlight) {
+      return;
+    }
+
+    this.prekeySyncInFlight = true;
+
+    try {
+      if (!this.authState) {
+        console.warn('⚠️ AuthState não disponível para upload de pre-keys');
+        return;
+      }
+
+      // Chama a função utilitária com os parâmetros corretos
+      await uploadPreKeysToServerIfRequired(this.authState, this.sendNode.bind(this));
+
+    } catch (error) {
+      console.error('❌ Erro no upload de pre-keys:', error);
+    } finally {
+      this.prekeySyncInFlight = false;
+    }
+  }
+
+  // ✅ CORREÇÃO 4: Corrigir transição de status no connection.update
+  private handleConnectionUpdate(update: Partial<ConnectionUpdate>): void {
+    console.log('🔄 Connection update:', update);
+
+    // ✅ CORREÇÃO: Só marcar connected quando connection === 'open'
+    if (update.connection === 'open') {
+      this.emit('connection.update', {
+        connection: 'connected',
+        receivedPendingNotifications: false
+      });
+      console.log('✅ Conexão estabelecida com sucesso');
+      return;
+    }
+
+    // Para QR code, emitir apenas quando update.qr vier
+    if (update.qr) {
+      this.emit('connection.update', {
+        connection: 'connecting',
+        qr: update.qr,
+        receivedPendingNotifications: false
+      });
+      return;
+    }
+
+    // Para outros estados, emitir conforme recebido
+    this.emit('connection.update', update);
+  }
 
   constructor(proxyConfig?: ProxyConfig, authState?: AuthenticationState, saveCreds?: () => Promise<void>) {
     super();
@@ -252,9 +308,8 @@ export class WebSocketClient extends EventEmitter {
       };
 
       let node: waproto.IClientPayload;
-      if (!this.authState.creds.me) {
+      if (!this.authState.creds.me || !this.authState.creds.registered) {
         // Para registro, usar generateRegistrationNode do Baileys
-        const { generateRegistrationNode } = require('../utils/ValidateConnection');
         const signalCreds = {
           registrationId: this.authState.creds.registrationId,
           signedPreKey: this.authState.creds.signedPreKey,
@@ -263,10 +318,10 @@ export class WebSocketClient extends EventEmitter {
         node = generateRegistrationNode(signalCreds, socketConfig);
         console.log('✅ Payload de registro gerado (generateRegistrationNode)');
       } else {
-        // Para login, usar generateLoginNode do Baileys
+        // Para login, usar generateLoginNode do Baileys (apenas se registered === true)
         const { generateLoginNode } = require('../utils/ValidateConnection');
         node = generateLoginNode(this.authState.creds.me.id, socketConfig);
-        console.log('✅ Payload de login gerado (generateLoginNode)');
+        console.log('✅ Payload de login gerado (generateLoginNode) - registered:', this.authState.creds.registered);
       }
 
       // 6. Criptografa e envia ClientFinish (seguindo padrão Baileys)
@@ -548,10 +603,18 @@ export class WebSocketClient extends EventEmitter {
 
       this.ws.on('close', (code: number, reason: Buffer) => {
         const reasonStr = reason.toString();
-        console.log(`❌ Conexão fechada - Código: ${code}, Motivo: ${reasonStr}`);
-        console.log(`🔍 Detalhes do fechamento:`);
-        console.log(`   - Código: ${code} (${this.getCloseCodeDescription(code)})`);
-        console.log(`   - Motivo: ${reasonStr || 'Não especificado'}`);
+
+        // ✅ CORREÇÃO: Ajustar log para código 1006 após pair-success (fluxo normal)
+        if (code === 1006 && this.authState?.creds?.me?.id) {
+          console.log(`ℹ️ Reconexão esperada após pair-success - Código: ${code}`);
+          console.log(`🔄 WhatsApp fechou a sessão antiga para permitir reconexão autenticada`);
+        } else {
+          console.log(`❌ Conexão fechada - Código: ${code}, Motivo: ${reasonStr}`);
+          console.log(`🔍 Detalhes do fechamento:`);
+          console.log(`   - Código: ${code} (${this.getCloseCodeDescription(code)})`);
+          console.log(`   - Motivo: ${reasonStr || 'Não especificado'}`);
+        }
+
         console.log(`   - Tentativas de reconexão: ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
         console.log(`   - Proxy habilitado: ${this.proxyConfig?.enabled ? 'Sim' : 'Não'}`);
 
@@ -671,6 +734,10 @@ export class WebSocketClient extends EventEmitter {
    * Configura handlers de eventos específicos do Baileys
    */
   private setupBaileysEventHandlers(): void {
+    // ✅ CORREÇÃO 1: Evitar registrar handlers duplicados
+    if (this._serverEventsSetup) return;
+    this._serverEventsSetup = true;
+
     console.log('🎧 Configurando handlers de eventos Baileys...');
 
     // Emite connection.update inicial seguindo padrão Baileys (process.nextTick equivalente)
@@ -682,35 +749,41 @@ export class WebSocketClient extends EventEmitter {
       });
     });
 
-    // Listeners para eventos específicos do protocolo WhatsApp
+    // ✅ CORREÇÃO: Usar apenas um registrador amplo para IQ e filtrar dentro
+    this.on('CB:iq', async (node: any) => {
+      if (node?.tag !== 'iq') return;
 
-    // Resposta automática para pings do servidor (keep-alive) - padrão Baileys oficial
-    // IMPORTANTE: Pings normais vêm como CB:iq,type:get,xmlns:urn:xmpp:ping
-    // captura por tipo e filtra por xmlns dentro
-    this.on('CB:iq,type:get', async (stanza: any) => {
-      if (stanza?.attrs?.xmlns === 'urn:xmpp:ping') {
-        await this.respondToPing(stanza)
+      // ✅ trata ping mesmo sem content
+      if (node.attrs.type === 'get' && node.attrs.xmlns === 'urn:xmpp:ping') {
+        await this.respondToPing(node);
+        return;
       }
-    })
 
-    // fallback: captura por xmlns
-    this.on('CB:iq,xmlns:urn:xmpp:ping', async (stanza: any) => {
-      await this.respondToPing(stanza)
-    })
+      const child = node.content?.[0];
+      if (!child) return;
 
+      if (node.attrs.type === 'set' && child.tag === 'pair-device') {
+        await this.handlePairDevice(node);
+        return;
+      }
+
+      if (node.attrs.type === 'set' && child.tag === 'pair-success') {
+        await this.handlePairSuccess(node);
+        return;
+      }
+    });
 
     this.on('CB:stream:error', async (node: any) => {
       // IMPORTANTE: Verificar se é erro relacionado a ping mal formado
       const reasonNode = node.content?.[0];
       if (reasonNode?.tag === 'ping') {
-          console.warn('⚠️ Stream error (ping) recebido - ignorando como faz o Baileys');
+        console.warn('⚠️ Stream error (ping) recebido - ignorando como faz o Baileys');
 
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
           this.ws.close(1000, 'pong malformed');
         }
         return;
       }
-
 
       // Para outros tipos de stream:error, logar normalmente
       console.error('❌ Stream errored out:', node);
@@ -744,7 +817,6 @@ export class WebSocketClient extends EventEmitter {
     });
 
     this.on('CB:xmlstreamend', () => {
-
       // Evita processamento repetido do xmlstreamend
       if (this.streamEnded) {
         return;
@@ -774,27 +846,18 @@ export class WebSocketClient extends EventEmitter {
       }
     });
 
-    // Pair device handler - processa solicitação de pareamento no conteúdo
-    // Mantendo apenas CB:iq,,pair-device como no Baileys (removendo duplicata)
-    this.on('CB:iq,,pair-device', async (stanza: any) => {
-      await this.handlePairDevice(stanza);
-    });
-
-    // Pair success handler - processa pareamento bem-sucedido
-    this.on('CB:iq,,pair-success', async (stanza: any) => {
-      await this.handlePairSuccess(stanza);
-    });
-
     // Success handler - processa nó 'success' do servidor (padrão Baileys)
     this.on('CB:success', async (node: any) => {
       try {
-        // Upload de pre-keys se necessário (seguindo padrão Baileys)
-        if (this.authState) {
-          await uploadPreKeysToServerIfRequired(this.authState, this.sendNode.bind(this));
-        }
+        // ✅ CORREÇÃO 2: Upload de pre-keys com lock para evitar duplicação
+        await this.uploadPreKeysToServerIfRequired();
 
-        // Envia passive IQ 'active' (seguindo padrão Baileys)
-        await this.sendPassiveIq('active');
+        // ✅ CORREÇÃO 3: Envia passive IQ 'active' apenas uma vez por sessão
+        if (!this.passiveIqSent) {
+          await this.sendPassiveIq('active');
+          this.passiveIqSent = true;
+          console.log('✅ Passive IQ active enviado (primeira vez)');
+        }
 
       } catch (err: any) {
         console.warn('⚠️ Falha ao enviar passive IQ inicial:', err);
@@ -807,12 +870,47 @@ export class WebSocketClient extends EventEmitter {
     this.on('CB:failure', (node: any) => {
       this.handleConnectionFailure(node);
     });
+
+    // Handler para notificações (notification)
+    this.on('CB:notification', async (stanza: any) => {
+      try {
+        console.log('🔔 Notificação recebida:', stanza.attrs?.type);
+
+        // Emite evento de notificação
+        this.emit('messages.upsert', {
+          messages: [stanza],
+          type: 'notify'
+        });
+
+      } catch (error) {
+        console.error('❌ Erro ao processar notificação:', error);
+      }
+    });
+
+    // Handler para receipts (confirmações de entrega)
+    this.on('CB:receipt', async (stanza: any) => {
+      try {
+        console.log('✅ Receipt recebido:', stanza.attrs?.type);
+
+        // Emite evento de receipt
+        this.emit('messages.update', [stanza]);
+
+      } catch (error) {
+        console.error('❌ Erro ao processar receipt:', error);
+      }
+    });
   }
 
   /**
    * Processa sucesso da conexão seguindo padrão Baileys
    */
   private async handleConnectionSuccess(node: any): Promise<void> {
+    // ✅ CORREÇÃO: Evitar múltiplos processamentos do evento success
+    if (this._successHandled) {
+      return;
+    }
+
+    this._successHandled = true;
     console.log('✅ Conexão estabelecida com sucesso:', node);
 
     try {
@@ -820,6 +918,17 @@ export class WebSocketClient extends EventEmitter {
       // após o handshake estar completamente finalizado
 
       console.log('🌐 Conexão aberta para WhatsApp');
+
+      // ✅ CORREÇÃO: Garantir persistência imediata após success
+      if (this.authState?.creds) {
+        this.authState.creds.registered = true;
+
+        // Salva as credenciais imediatamente
+        if (this.saveCreds) {
+          await this.saveCreds();
+          console.log('💾 Credenciais salvas após success');
+        }
+      }
 
       // Atualiza credenciais com LID se disponível
       if (node.attrs?.lid && this.authState?.creds.me?.id) {
@@ -838,6 +947,7 @@ export class WebSocketClient extends EventEmitter {
 
       // Emite evento connection.update seguindo padrão Baileys
       this.emit('connection.update', { connection: 'open' });
+      console.log('✅ [WebSocketClient] Login concluído');
 
     } catch (error: any) {
       console.warn('⚠️ Erro no processamento do success:', error);
@@ -867,26 +977,37 @@ export class WebSocketClient extends EventEmitter {
 
     // Gera todos os QRs imediatamente (sem timers) - padrão Baileys
     console.log(`📱 Gerando ${this.qrRefs.length} QR codes imediatamente`);
-    
+
     for (let i = 0; i < this.qrRefs.length; i++) {
       const ref = this.qrRefs[i];
       const qr = [ref, noiseKeyB64, identityKeyB64, advB64].join(',');
-      
+
       this.emit('connection.update', {
         connection: 'connecting',
         qr: qr,
         isNewLogin: true
       });
-      
+
       console.log(`🔄 QR ${i + 1}/${this.qrRefs.length} gerado`);
     }
   }
 
-  /**
-   * Para a geração de QR codes
-   */
+  // ✅ CORREÇÃO 5: Garantir que QR seja parado exatamente uma vez após pair-success
+  private qrGenerationStopped = false;
+
   private stopQRGeneration(): void {
+    if (this.qrGenerationStopped) {
+      console.log('⚠️ QR generation já foi parado - evitando duplicação');
+      return;
+    }
+
+    this.qrGenerationStopped = true;
     console.log('🔍 [DEBUG] stopQRGeneration chamado');
+
+    // ✅ Limpa as referências QR para impedir reutilização
+    this.qrRefs = [];
+    console.log('🔍 [DEBUG] qrRefs limpo - não haverá mais QR codes');
+
     if (this.qrTimer) {
       console.log(`🔍 [DEBUG] Limpando timer QR: ${this.qrTimer}`);
       clearTimeout(this.qrTimer);
@@ -916,18 +1037,113 @@ export class WebSocketClient extends EventEmitter {
       console.log('📱 Me:', updatedCreds.me);
       console.log('🖥️ Platform:', updatedCreds.platform);
 
-      // Emite evento de atualização das credenciais (padrão Baileys)
-      this.emit('creds.update', updatedCreds);
+      // ✅ CORREÇÃO: Extrair dados específicos do pair-success
+      const deviceNode = stanza.content?.find((child: any) => child.tag === 'device');
+      const deviceJid = updatedCreds.me?.id;
+      const bizName = updatedCreds.me?.name;
+      const lid = updatedCreds.me?.lid;
+      const platform = deviceNode?.attrs?.name || 'smba';
 
-      // Emite evento de conexão atualizada (padrão Baileys)
-      this.emit('connection.update', {
-        isNewLogin: true,
-        qr: undefined
-      });
+      // ✅ Atualizar campos obrigatórios após pair-success com dados corretos
+      this.authState!.creds.me = {
+        id: deviceJid || this.authState!.creds.me?.id || '',
+        name: bizName || this.authState!.creds.me?.name,
+        lid: lid || this.authState!.creds.me?.lid
+      };
+
+      // ✅ Marcar como registrado
+      this.authState!.creds.registered = true;
+
+      // ✅ Salvar a platform
+      this.authState!.creds.platform = platform;
+
+      // ✅ Atualizar signalIdentities para o novo device (limpar identidades antigas)
+      if (deviceJid) {
+        // Inicializar signalIdentities se não existir
+        if (!this.authState!.creds.signalIdentities) {
+          this.authState!.creds.signalIdentities = [];
+        }
+
+        // Limpar identidades antigas de outros devices
+        const oldDeviceIds = this.authState!.creds.signalIdentities
+          .filter(identity => identity.identifier.name !== deviceJid)
+          .map(identity => identity.identifier.name);
+
+        if (oldDeviceIds.length > 0) {
+          console.log(`🧹 Limpando identidades antigas de devices: ${oldDeviceIds.join(', ')}`);
+          this.authState!.creds.signalIdentities = this.authState!.creds.signalIdentities
+            .filter(identity => identity.identifier.name === deviceJid);
+        }
+
+        // Garantir que existe signalIdentity para o device atual
+        const existingIdentity = this.authState!.creds.signalIdentities
+          .find(identity => identity.identifier.name === deviceJid);
+
+        if (!existingIdentity) {
+          this.authState!.creds.signalIdentities.push({
+            identifier: { name: deviceJid, deviceId: 0 },
+            identifierKey: this.authState!.creds.signedIdentityKey.public
+          });
+          console.log(`🔑 Criada signalIdentity para device: ${deviceJid}`);
+        }
+      }
+
+      // ✅ Atualizar outros campos obrigatórios
+      this.authState!.creds.lastAccountSyncTimestamp = Date.now();
+      this.authState!.creds.account = this.authState!.creds.account || {
+        details: "",
+        accountSignatureKey: "",
+        accountSignature: "",
+        deviceSignature: ""
+      };
+
+      // ✅ Aplicar todas as atualizações das credenciais
+      this.authState!.creds = { ...this.authState!.creds, ...updatedCreds };
+
+      // ✅ Salvar imediatamente após todas as atualizações
+      if (this.saveCreds) {
+        await this.saveCreds();
+        console.log('💾 Credenciais salvas após pair-success com dados completos');
+        console.log(`📱 Device ID: ${this.authState!.creds.me?.id}`);
+        console.log(`🆔 LID: ${this.authState!.creds.me?.lid}`);
+        console.log(`✅ Registered: ${this.authState!.creds.registered}`);
+        console.log(`🖥️ Platform: ${this.authState!.creds.platform}`);
+      }
+
+      // ✅ Upload das Pre-Keys com lock para evitar duplicidade
+      await this.uploadPreKeysToServerIfRequired();
+
+      // ✅ CORREÇÃO: Emite apenas creds.update no pair-success (padrão Baileys)
+      this.emit('creds.update', this.authState!.creds);
 
       // Envia resposta para o servidor (padrão Baileys)
       await this.sendNode(reply);
       console.log('✅ Resposta de pair-success enviada');
+
+      // ✅ Enviar passive IQ <active/> apenas uma vez
+      if (!this.passiveIqSent) {
+        try {
+          await this.sendNode({
+            tag: 'iq',
+            attrs: { to: 's.whatsapp.net', type: 'set', xmlns: 'passive' },
+            content: [{ tag: 'active', attrs: {} }]
+          });
+          this.passiveIqSent = true;
+          console.log('📡 Passive IQ <active/> enviado após pair-success (primeira vez)');
+        } catch (error) {
+          console.error('❌ Erro ao enviar passive IQ:', error);
+        }
+      }
+
+      // ✅ CORREÇÃO: Remove QR do estado mas NÃO emite connection.update:open aqui
+      // O connection.update:open será emitido apenas no CB:success
+      this.emit('connection.update', {
+        connection: 'connecting',
+        qr: undefined,
+        isNewLogin: true
+      });
+
+      console.log('✅ Pair-success processado - aguardando CB:success para connection:open');
 
     } catch (error) {
       console.error('❌ Erro ao processar pair-success:', error);
@@ -999,6 +1215,17 @@ export class WebSocketClient extends EventEmitter {
     // Reset da flag de stream ended para permitir reconexões
     this.streamEnded = false;
 
+    // ✅ Reset da flag de passive IQ para nova conexão
+    this.passiveIqSent = false;
+
+    // ✅ CORREÇÃO: Reset flags para permitir nova sessão
+    this.qrGenerationStopped = false;
+    this.prekeySyncInFlight = false;
+    this._serverEventsSetup = false;
+    this.connectionClosed = false;
+    this.lastCloseReason = undefined;
+    this._successHandled = false; // ✅ Reset flag de success para nova sessão
+
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval);
       this.keepAliveInterval = undefined;
@@ -1013,7 +1240,6 @@ export class WebSocketClient extends EventEmitter {
       clearTimeout(this.qrTimer);
       this.qrTimer = undefined;
     }
-
     console.log('🔍 [DEBUG] cleanup() chamado - preservando timer QR para reconexão');
   }
 
@@ -1091,7 +1317,15 @@ export class WebSocketClient extends EventEmitter {
   private shouldReconnect(code: number): boolean {
     // Códigos que permitem reconexão automática
     const reconnectableCodes = [1006, 1011, 1012, 1013, 1014];
-    return reconnectableCodes.includes(code) && this.reconnectAttempts < this.maxReconnectAttempts;
+
+    // Só reconecta se tem credenciais válidas salvas (usuário já autenticado)
+    const hasValidCredentials = !!(this.authState?.creds?.me?.id &&
+      this.authState?.creds?.noiseKey &&
+      this.authState?.creds?.signedIdentityKey);
+
+    return reconnectableCodes.includes(code) &&
+      this.reconnectAttempts < this.maxReconnectAttempts &&
+      hasValidCredentials;
   }
 
   /**
@@ -1127,11 +1361,42 @@ export class WebSocketClient extends EventEmitter {
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
 
     console.log(`🔄 Tentativa de reconexão ${this.reconnectAttempts}/${this.maxReconnectAttempts} em ${delay}ms`);
+    console.log(`🔑 Usando credenciais salvas para reconexão automática`);
 
-    setTimeout(() => {
-      this.connect().catch(error => {
-        console.error('❌ Falha na reconexão:', error.message);
-      });
+    setTimeout(async () => {
+      try {
+        // Reconecta usando as credenciais existentes
+        await this.connect();
+
+        // Após reconectar, emite evento de atualização de conexão
+        this.emit('connection.update', {
+          connection: 'open',
+          isOnline: true
+        });
+
+        console.log(`✅ Reconexão bem-sucedida (tentativa ${this.reconnectAttempts})`);
+
+        // Reset contador de tentativas após sucesso
+        this.reconnectAttempts = 0;
+
+      } catch (error) {
+        console.error(`❌ Falha na reconexão (tentativa ${this.reconnectAttempts}):`, error);
+
+        // Se ainda pode tentar reconectar
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          console.log(`⏳ Agendando próxima tentativa de reconexão...`);
+          this.scheduleReconnect();
+        } else {
+          console.error(`❌ Máximo de tentativas de reconexão atingido (${this.maxReconnectAttempts})`);
+          this.emit('connection.update', {
+            connection: 'close',
+            lastDisconnect: {
+              error: new Error('Falha na reconexão após múltiplas tentativas'),
+              date: new Date()
+            }
+          });
+        }
+      }
     }, delay);
   }
 

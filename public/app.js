@@ -732,12 +732,65 @@ class WhatsAppManager {
         // Mostra toast de sucesso
         this.showToast('WhatsApp conectado com sucesso!', 'success');
         
-        // Fecha o modal após 3 segundos
+        // Atualiza imediatamente o status da instância na interface
+        this.updateInstanceStatus('connected', instanceId);
+        
+        // Fecha o modal após 2 segundos
         setTimeout(() => {
             this.closeQrModal();
-            // Atualiza a lista de instâncias
-            this.loadInstances();
-        }, 3000);
+        }, 2000);
+    }
+
+    // Função para atualizar o status de uma instância específica na interface
+    updateInstanceStatus(status, instanceId = null) {
+        // Se instanceId não foi fornecido, usa a instância atual do QR
+        const targetInstanceId = instanceId || (this.currentQrInstance ? this.currentQrInstance.id : null);
+        
+        if (!targetInstanceId) {
+            console.warn('⚠️ Nenhuma instância especificada para atualizar status');
+            return;
+        }
+        
+        // Encontra o card da instância
+        const instanceCard = document.querySelector(`[data-instance-id="${targetInstanceId}"]`);
+        if (!instanceCard) {
+            console.warn(`⚠️ Card da instância ${targetInstanceId} não encontrado`);
+            return;
+        }
+        
+        // Atualiza o status visual
+        const statusElement = instanceCard.querySelector('.instance-status');
+        if (statusElement) {
+            statusElement.className = `instance-status ${this.getStatusClass(status)}`;
+            statusElement.textContent = this.getStatusText(status);
+        }
+        
+        // Atualiza o botão principal baseado no status
+        const actionsContainer = instanceCard.querySelector('.instance-actions');
+        if (actionsContainer && status === 'connected') {
+            const connectBtn = actionsContainer.querySelector('.connect-btn');
+            if (connectBtn) {
+                connectBtn.outerHTML = `
+                    <button class="btn btn-success" disabled>
+                        <i class="fas fa-check-circle"></i> Conectado
+                    </button>
+                `;
+            }
+        } else if (actionsContainer && status === 'disconnected') {
+            const connectedBtn = actionsContainer.querySelector('.btn-success[disabled]');
+            if (connectedBtn) {
+                const instanceName = instanceCard.querySelector('.instance-name').textContent;
+                connectedBtn.outerHTML = `
+                    <button class="btn btn-primary connect-btn" data-instance-id="${targetInstanceId}" data-instance-name="${this.escapeHtml(instanceName)}">
+                        <i class="fas fa-plug"></i> Conectar
+                    </button>
+                `;
+                // Re-bind events para o novo botão
+                this.bindInstanceEvents();
+            }
+        }
+        
+        console.log(`✅ Status da instância ${targetInstanceId} atualizado para: ${status}`);
     }
 
     updateQrModalStatus(message, status) {
