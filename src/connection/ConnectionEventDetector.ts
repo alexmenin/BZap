@@ -43,16 +43,13 @@ export interface ConnectionUpdate {
 }
 
 /**
- * Interface para eventos de conexão
+ * Interface para eventos de conexão (simplificada - foco em handshake e QR)
  */
 export interface ConnectionEvents {
   'connection.update': (update: ConnectionUpdate) => void;
   'creds.update': (creds: any) => void;
-  'messaging-history.set': (data: any) => void;
-  'chats.upsert': (chats: any[]) => void;
-  'contacts.upsert': (contacts: any[]) => void;
-  'messages.upsert': (messages: any) => void;
-  'presence.update': (presence: any) => void;
+  // Removidos eventos de mensagens, chats, contatos e presença
+  // Mantidos apenas os essenciais para handshake e QR
 }
 
 /**
@@ -541,28 +538,19 @@ export class ConnectionEventDetector extends EventEmitter {
   }
 
   /**
-   * Manipula mensagens normais
+   * Manipula mensagens normais (simplificado - apenas log)
    */
   private handleMessage(data: Buffer): void {
-    Logger.debug('📱 Mensagem recebida');
-    
-    // Emite evento de mensagem para processamento posterior
-    this.emit('messages.upsert', {
-      messages: [{ data }],
-      type: 'notify'
-    });
+    Logger.debug('📱 Mensagem recebida - ignorada (foco em handshake/QR)');
+    // Removido processamento de mensagens - foco apenas em handshake e QR
   }
 
   /**
-   * Manipula atualizações de presença
+   * Manipula atualizações de presença (simplificado - apenas log)
    */
   private handlePresence(data: Buffer): void {
-    Logger.debug('👤 Atualização de presença');
-    
-    this.emit('presence.update', {
-      id: 'unknown',
-      presences: {}
-    });
+    Logger.debug('👤 Atualização de presença - ignorada (foco em handshake/QR)');
+    // Removido processamento de presença - foco apenas em handshake e QR
   }
 
   /**

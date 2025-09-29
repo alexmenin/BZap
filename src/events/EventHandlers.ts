@@ -1,9 +1,9 @@
 // EventHandlers.ts - Sistema de event handlers baseado no padrão Baileys
 import { Logger } from '../utils/Logger';
-import { SessionManager, ConnectionState, DisconnectReason } from '../session/SessionManager';
+import { SessionManager } from '../api/services/SessionManager';
+import { ConnectionState, DisconnectReason } from '../connection/ConnectionEventDetector';
 import { AuthenticationState } from '../auth/AuthState';
 import { waproto } from '@wppconnect/wa-proto';
-import { getKeyAuthor, getStatusFromReceiptType } from '../utils/generics';
 
 // Interfaces para os eventos
 export interface ConnectionUpdate {
@@ -250,10 +250,9 @@ export class EventHandlers {
     if (error.message.includes('401')) {
       Logger.error(`[${instanceId}] Sessão inválida - limpando estado`);
       if (!this.sessionManager) {
-        const { SessionManager } = await import('../session/SessionManager');
         this.sessionManager = SessionManager.getInstance();
       }
-      await this.sessionManager.clearSession(instanceId);
+      await this.sessionManager.removeInstanceData(instanceId.toString());
       shouldReconnect = false;
     } else if (error.message.includes('408') || error.message.includes('timeout')) {
       Logger.warn(`[${instanceId}] Timeout - tentando reconectar`);
@@ -264,18 +263,9 @@ export class EventHandlers {
     }
 
     if (shouldReconnect) {
-      if (!this.sessionManager) {
-        const { SessionManager } = await import('../session/SessionManager');
-        this.sessionManager = SessionManager.getInstance();
-      }
-      
-      const session = this.sessionManager.getSession(instanceId);
-      if (session) {
-        const attempts = 1; // Primeira tentativa de reconexão
-        setTimeout(() => {
-          this.sessionManager!['scheduleReconnect'](session, attempts);
-        }, delay);
-      }
+      Logger.info(`[${instanceId}] Agendando reconexão em ${delay}ms`);
+      // A reconexão será gerenciada pelo ConnectionEventDetector
+      // Não precisamos gerenciar isso aqui
     }
   }
 
@@ -290,69 +280,27 @@ export class EventHandlers {
       Logger.info(`[${instanceId}] Novo login detectado`);
     }
 
-    // Atualizar estado da sessão
-    if (!this.sessionManager) {
-      const { SessionManager } = await import('../session/SessionManager');
-      this.sessionManager = SessionManager.getInstance();
-    }
-    
-    await this.sessionManager.updateSessionState(instanceId, {
-      connectionState: ConnectionState.open,
-      isOnline: update.isOnline || false,
-      lastActivity: new Date()
-    });
+    // Não há necessidade de atualizar estado da sessão aqui
+    // O SessionManager atual gerencia apenas autenticação
+    Logger.info(`[${instanceId}] Instância conectada e pronta`);
   }
 
   // Handler para QR Code
   private async handleQRCode(instanceId: number, qr: string): Promise<void> {
     Logger.info(`[${instanceId}] QR Code gerado`);
     
-    // Salvar timestamp do QR code na sessão
-    if (!this.sessionManager) {
-      const { SessionManager } = await import('../session/SessionManager');
-      this.sessionManager = SessionManager.getInstance();
-    }
-    
-    await this.sessionManager.updateSessionState(instanceId, {
-      qrCodeTimestamp: new Date()
-    });
+    // O QR code é gerenciado pelo ConnectionEventDetector
+    // Não há necessidade de salvar na sessão aqui
+    Logger.info(`[${instanceId}] QR Code disponível para escaneamento`);
   }
 
-  // Handler para messages.upsert
+  // Handler para mensagens (simplificado - apenas log)
   public async handleMessagesUpsert(
     instanceId: number,
     messageUpsert: MessageUpsert
   ): Promise<void> {
-    Logger.debug(`[${instanceId}] Messages upsert: ${messageUpsert.messages.length} mensagens`);
-
-    // Emitir evento
-    await this.emit('messages.upsert', messageUpsert);
-
-    // Processar cada mensagem
-    for (const message of messageUpsert.messages) {
-      await this.processMessage(instanceId, message);
-    }
-  }
-
-  // Processar mensagem individual
-  private async processMessage(instanceId: number, message: WAMessage): Promise<void> {
-    try {
-      const { key, messageTimestamp, pushName } = message;
-      
-      Logger.debug(`[${instanceId}] Processando mensagem:`, {
-        from: key.remoteJid,
-        id: key.id,
-        fromMe: key.fromMe,
-        timestamp: messageTimestamp,
-        pushName
-      });
-
-      // Aqui você pode adicionar lógica específica para processar mensagens
-      // Por exemplo: salvar no banco de dados, responder automaticamente, etc.
-      
-    } catch (error) {
-      Logger.error(`[${instanceId}] Erro ao processar mensagem:`, error);
-    }
+    Logger.debug(`[${instanceId}] Mensagens recebidas: ${messageUpsert.messages.length} mensagens`);
+    // Removido processamento de mensagens - foco apenas em handshake e QR
   }
 
   // Handler para creds.update
@@ -360,82 +308,60 @@ export class EventHandlers {
     instanceId: number,
     creds: Partial<AuthenticationState['creds']>
   ): Promise<void> {
-    Logger.debug(`[${instanceId}] Credenciais atualizadas`);
-
-    // Emitir evento
-    await this.emit('creds.update', creds);
-
-    // Salvar credenciais atualizadas
-    if (!this.sessionManager) {
-      const { SessionManager } = await import('../session/SessionManager');
-      this.sessionManager = SessionManager.getInstance();
-    }
+    Logger.info(`[${instanceId}] Credenciais atualizadas`);
     
-    await this.sessionManager.saveSessionCreds(instanceId, creds);
-  }
-
-  // Handler para chats.upsert
-  public async handleChatsUpsert(instanceId: number, chats: any[]): Promise<void> {
-    Logger.debug(`[${instanceId}] Chats upsert: ${chats.length} chats`);
-    await this.emit('chats.upsert', chats);
-  }
-
-  // Handler para chats.update
-  public async handleChatsUpdate(instanceId: number, updates: ChatUpdate[]): Promise<void> {
-    Logger.debug(`[${instanceId}] Chats update: ${updates.length} atualizações`);
-    await this.emit('chats.update', updates);
-  }
-
-  // Handler para contacts.upsert
-  public async handleContactsUpsert(instanceId: number, contacts: Contact[]): Promise<void> {
-    Logger.debug(`[${instanceId}] Contacts upsert: ${contacts.length} contatos`);
-    await this.emit('contacts.upsert', contacts);
-  }
-
-  // Handler para groups.upsert
-  public async handleGroupsUpsert(instanceId: number, groups: GroupMetadata[]): Promise<void> {
-    Logger.debug(`[${instanceId}] Groups upsert: ${groups.length} grupos`);
-    await this.emit('groups.upsert', groups);
-  }
-
-  // Handler para presence.update
-  public async handlePresenceUpdate(
-    instanceId: number,
-    presence: BaileysEventMap['presence.update']
-  ): Promise<void> {
-    Logger.debug(`[${instanceId}] Presence update para: ${presence.id}`);
-    await this.emit('presence.update', presence);
-  }
-
-  // Configurar todos os event handlers padrão
-  public setupDefaultHandlers(): void {
-    Logger.info('Configurando event handlers padrão');
-
-    // Handler padrão para connection.update
-    this.on('connection.update', async (update) => {
-      // Lógica padrão já implementada nos métodos específicos
-    });
-
-    // Handler padrão para messages.upsert
-    this.on('messages.upsert', async (messageUpsert) => {
-      // Log básico das mensagens recebidas
-      for (const message of messageUpsert.messages) {
-        if (!message.key.fromMe) {
-          Logger.info('Nova mensagem recebida:', {
-            from: message.key.remoteJid,
-            id: message.key.id,
-            pushName: message.pushName
-          });
-        }
+    try {
+      if (!this.sessionManager) {
+        this.sessionManager = SessionManager.getInstance();
       }
+      
+      // Converter as credenciais para o formato esperado pelo SessionManager
+      const convertedCreds: any = {};
+      
+      if (creds.noiseKey) {
+        convertedCreds.noiseKey = Buffer.from(creds.noiseKey.private);
+      }
+      
+      if (creds.signedIdentityKey) {
+        convertedCreds.signedIdentityKey = Buffer.from(creds.signedIdentityKey.private);
+      }
+      
+      if (creds.signedPreKey) {
+        convertedCreds.signedPreKey = Buffer.from(creds.signedPreKey.keyPair.private);
+      }
+      
+      // Copiar outros campos diretamente
+      Object.keys(creds).forEach(key => {
+        if (!['noiseKey', 'signedIdentityKey', 'signedPreKey'].includes(key)) {
+          convertedCreds[key] = (creds as any)[key];
+        }
+      });
+      
+      await this.sessionManager.updateCredentials(instanceId.toString(), convertedCreds);
+      
+    } catch (error) {
+      Logger.error(`[${instanceId}] Erro ao salvar credenciais:`, error);
+    }
+  }
+
+  // Handlers simplificados - removidos para focar apenas em handshake e QR
+  // Mantidos apenas logs básicos para debug
+
+  // Configurar handlers essenciais para handshake e QR
+  public setupDefaultHandlers(): void {
+    Logger.info('Configurando event handlers essenciais para handshake e QR');
+
+    // Handler essencial para connection.update
+    this.on('connection.update', async (update) => {
+      Logger.debug('Connection update recebido:', update);
     });
 
-    // Handler padrão para creds.update
+    // Handler essencial para creds.update
     this.on('creds.update', async (creds) => {
       Logger.debug('Credenciais atualizadas automaticamente');
     });
 
-    Logger.info('Event handlers padrão configurados');
+    Logger.info('Event handlers essenciais configurados');
   }
 
   // Limpar todos os listeners

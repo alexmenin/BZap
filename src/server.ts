@@ -12,7 +12,6 @@ import { CacheManager } from './api/services/CacheManager';
 
 // Importa rotas
 import instanceRoutes from './api/routes/instance';
-import qrcodeRoutes from './api/routes/qrcode';
 
 // Carrega variáveis de ambiente
 config();
@@ -145,61 +144,38 @@ class WhatsAppAPIServer {
   }
 
   /**
-   * Configura rotas da API
+   * Configura rotas da API (simplificadas - foco em handshake e QR)
    */
   private setupRoutes(): void {
-    // Rota de health check
+    // Rota de health check (essencial)
     this.app.get('/health', (req: Request, res: Response) => {
       const stats = {
         status: 'ok',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        memory: process.memoryUsage(),
         instances: this.instanceManager.getStats(),
-        cache: this.cacheManager.getStats(),
         version: process.env.npm_package_version || '1.0.0'
       };
 
       res.json(stats);
     });
 
-    // Rota de informações da API
+    // Rota de informações da API (simplificada)
     this.app.get('/api', (req: Request, res: Response) => {
       res.json({
-        name: 'WhatsApp API Server',
+        name: 'WhatsApp Handshake & QR API',
         version: process.env.npm_package_version || '1.0.0',
-        description: 'API REST para integração com WhatsApp',
+        description: 'API focada em handshake e geração de QR code WhatsApp',
         endpoints: {
           instances: '/api/instance',
-          qrcode: '/api/qrcode',
           health: '/health'
         },
-        documentation: '/api/docs',
         timestamp: new Date().toISOString()
       });
     });
 
-    // Rotas da API
+    // Rotas essenciais da API
     this.app.use('/api/instance', instanceRoutes);
-    this.app.use('/api/qrcode', qrcodeRoutes);
-
-    // Rota para documentação (placeholder)
-    this.app.get('/api/docs', (req: Request, res: Response) => {
-      res.json({
-        message: 'Documentação da API',
-        endpoints: {
-          'POST /api/instance': 'Cria nova instância WhatsApp',
-          'GET /api/instance': 'Lista todas as instâncias',
-          'GET /api/instance/:id': 'Obtém informações de uma instância',
-          'POST /api/instance/:id/connect': 'Conecta uma instância',
-          'POST /api/instance/:id/disconnect': 'Desconecta uma instância',
-          'DELETE /api/instance/:id': 'Remove uma instância',
-          'GET /api/qrcode/:instanceId': 'Obtém QR code de uma instância',
-          'POST /api/qrcode/:instanceId/generate': 'Gera novo QR code',
-          'GET /api/qrcode/:instanceId/status': 'Verifica status do QR code'
-        }
-      });
-    });
 
     // Servir arquivos estáticos da interface web
     const publicPath = path.join(__dirname, '..', 'public');
@@ -227,7 +203,7 @@ class WhatsAppAPIServer {
       } as ErrorResponse);
     });
 
-    Logger.info('✅ Rotas configuradas');
+    Logger.info('✅ Rotas essenciais configuradas (handshake + QR)');
   }
 
   /**

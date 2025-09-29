@@ -35,9 +35,7 @@ export interface CertChain {
   };
 }
 
-export interface CertificateDetails {
-  issuerSerial?: Buffer;
-}
+
 
 /**
  * Implementação do NoiseHandler baseada no Baileys-master
@@ -158,7 +156,6 @@ export function makeNoiseHandler(options: NoiseHandlerOptions) {
         
         // NÃO chame authenticate(publicKey) aqui; já foi chamado na inicialização
         
-        console.log('✅ ClientHello protobuf criado:', encoded.length, 'bytes');
         return Buffer.from(encoded);
         
       } catch (error) {
@@ -169,8 +166,6 @@ export function makeNoiseHandler(options: NoiseHandlerOptions) {
     },
     
     processHandshake: async ({ serverHello }: HandshakeMessage, noiseKey: KeyPair) => {
-      console.log('🤝 [HANDSHAKE START] Iniciando processamento do handshake');
-      
       if (!serverHello?.ephemeral || !serverHello?.static || !serverHello?.payload) {
         console.error('❌ [HANDSHAKE ERROR] ServerHello incompleto:', {
           hasEphemeral: !!serverHello?.ephemeral,
@@ -180,54 +175,27 @@ export function makeNoiseHandler(options: NoiseHandlerOptions) {
         throw new Error('ServerHello incompleto');
       }
 
-      console.log('🔐 [HANDSHAKE] Autenticando ephemeral key...');
       authenticate(serverHello.ephemeral);
-      
-      console.log('🔐 [HANDSHAKE] Misturando chave compartilhada ephemeral...');
       await mixIntoKey(Curve.sharedKey(privateKey, serverHello.ephemeral));
 
-      console.log('🔐 [HANDSHAKE] Descriptografando conteúdo estático...');
       const decStaticContent = decrypt(serverHello.static);
-      console.log('✅ [HANDSHAKE] Conteúdo estático descriptografado:', {
-        length: decStaticContent.length,
-        hex: Buffer.from(decStaticContent).toString('hex').substring(0, 32) + '...'
-      });
-      
-      console.log('🔐 [HANDSHAKE] Misturando chave compartilhada estática...');
       await mixIntoKey(Curve.sharedKey(privateKey, decStaticContent));
 
-      console.log('🔐 [HANDSHAKE] Descriptografando payload do certificado...');
       const certDecoded = decrypt(serverHello.payload);
-      console.log('✅ [HANDSHAKE] Certificado descriptografado:', {
-        length: certDecoded.length,
-        hex: Buffer.from(certDecoded).toString('hex').substring(0, 32) + '...'
-      });
 
       try {
         // Decodifica certificado usando protobuf do @wppconnect/wa-proto
-        console.log('🔐 [HANDSHAKE] Decodificando cadeia de certificados...');
         const { intermediate: certIntermediate } = waproto.CertChain.decode(certDecoded);
-
-        console.log('🔐 [HANDSHAKE] Decodificando detalhes do certificado...');
         const { issuerSerial } = waproto.CertChain.NoiseCertificate.Details.decode(certIntermediate!.details!);
-
-        console.log('🔐 [HANDSHAKE] Verificando serial do emissor:', {
-          received: issuerSerial,
-          expected: WA_CERT_DETAILS.SERIAL
-        });
         
         if (issuerSerial !== WA_CERT_DETAILS.SERIAL) {
           console.error('❌ [HANDSHAKE ERROR] Falha na verificação do certificado');
           throw new Boom('certification match failed', { statusCode: 400 });
         }
 
-        console.log('🔐 [HANDSHAKE] Criptografando chave pública do noise...');
         const keyEnc = encrypt(noiseKey.public);
-        
-        console.log('🔐 [HANDSHAKE] Misturando chave compartilhada final...');
         await mixIntoKey(Curve.sharedKey(noiseKey.private, serverHello.ephemeral));
 
-        console.log('✅ [HANDSHAKE SUCCESS] Handshake processado com sucesso');
         return keyEnc;
       } catch (error) {
          console.error('❌ [HANDSHAKE ERROR] Erro durante processamento:', {
@@ -240,37 +208,12 @@ export function makeNoiseHandler(options: NoiseHandlerOptions) {
     },
 
     encodeFrame: (data: Buffer | Uint8Array) => {
+      // NoiseHandler agora faz APENAS criptografia
+      // O framing (header WA + length prefix) é responsabilidade do WebSocketClient
       if (isFinished) {
         data = encrypt(data);
       }
-
-      let header: Buffer;
-
-      if (routingInfo) {
-        header = Buffer.alloc(7);
-        header.write('ED', 0, 'utf8');
-        header.writeUint8(0, 2);
-        header.writeUint8(1, 3);
-        header.writeUint8(routingInfo.byteLength >> 16, 4);
-        header.writeUint16BE(routingInfo.byteLength & 65535, 5);
-        header = Buffer.concat([header, routingInfo, options.NOISE_HEADER]);
-      } else {
-        header = Buffer.from(options.NOISE_HEADER);
-      }
-
-      const introSize = sentIntro ? 0 : header.length;
-      const frame = Buffer.alloc(introSize + 3 + data.byteLength);
-
-      if (!sentIntro) {
-        frame.set(header);
-        sentIntro = true;
-      }
-
-      frame.writeUInt8(data.byteLength >> 16, introSize);
-      frame.writeUInt16BE(65535 & data.byteLength, introSize + 1);
-      frame.set(data, introSize + 3);
-
-      return frame;
+      return Buffer.from(data);
     },
 
     decodeFrame: async (newData: Buffer | Uint8Array, onFrame: (buff: Uint8Array | BinaryNode) => void) => {
@@ -286,8 +229,6 @@ export function makeNoiseHandler(options: NoiseHandlerOptions) {
 
       inBytes = Buffer.concat([inBytes, newData]);
 
-      console.log(`recv ${newData.length} bytes, total recv ${inBytes.length} bytes`);
-
       let size = getBytesSize();
       while (size && inBytes.length >= size + 3) {
         let frame: Uint8Array | BinaryNode = inBytes.slice(3, size + 3);
@@ -297,28 +238,13 @@ export function makeNoiseHandler(options: NoiseHandlerOptions) {
           const result = decrypt(frame);
           frame = await decodeBinaryNode(result) as any;
         }
-
-        console.log(`🔍 [NOISE_HANDLER] ===== CHAMANDO CALLBACK =====`);
-        // Frame processado - logs removidos para evitar spam
         
         try {
-          console.log(`🚀 [NOISE_HANDLER] EXECUTANDO CALLBACK AGORA...`);
-          
-          // CORREÇÃO CRÍTICA: Chama o callback de forma síncrona e aguarda
-          // Callback executado - log removido para evitar spam
-          const result = onFrame(frame);
-          console.log(`🔍 [NOISE_HANDLER] Resultado do callback:`, result);
-          
-          console.log(`✅ [NOISE_HANDLER] Callback executado com sucesso`);
+          onFrame(frame);
         } catch (callbackError) {
           console.error(`❌ [NOISE_HANDLER] Erro no callback:`, callbackError);
-          console.error(`❌ [NOISE_HANDLER] Stack do erro:`, (callbackError as Error).stack);
-          console.error(`❌ [NOISE_HANDLER] Tipo do erro:`, typeof callbackError);
-          console.error(`❌ [NOISE_HANDLER] Nome do erro:`, (callbackError as Error).name);
-          console.error(`❌ [NOISE_HANDLER] Mensagem do erro:`, (callbackError as Error).message);
         }
         
-        console.log(`🔍 [NOISE_HANDLER] ===== FIM CALLBACK =====`);
         size = getBytesSize();
       }
     },

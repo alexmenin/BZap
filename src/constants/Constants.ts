@@ -11,8 +11,7 @@ export const WA_DEFAULT_EPHEMERAL = 7 * 24 * 60 * 60; // 7 dias em segundos
 export const WA_WEB_URL = 'web.whatsapp.com';
 export const WA_SOCKET_URL = 'wss://web.whatsapp.com/ws/chat';
 export const WA_UPLOAD_URL = 'https://upload.facebook.com/ajax/mercury/upload.php';
-export const CALL_VIDEO_PREFIX = 'https://call.video.whatsapp.com/video/';
-export const CALL_AUDIO_PREFIX = 'https://call.audio.whatsapp.com/voice/';
+
 
 // Headers padrão
 export const DEFAULT_USER_AGENT = 'WhatsApp/2.3000.1023223821 Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36';
@@ -1483,9 +1482,9 @@ export const LOG_CONFIG = {
 export const WS_CLIENT_CONFIG = {
   DEFAULT_CONNECTION_TIMEOUT: CONNECTION_CONFIG.connectionTimeout * 3,  // 60 segundos
   DEFAULT_RESPONSE_TIMEOUT: CONNECTION_CONFIG.handshakeTimeout * 2,   // 120 segundos
-  KEEPALIVE_INTERVAL: CONNECTION_CONFIG.keepAliveInterval - 5000,     // 25 segundos
+  KEEPALIVE_INTERVAL: CONNECTION_CONFIG.keepAliveInterval + 15000,    // 45 segundos (mais estável)
   MAX_RECONNECT_ATTEMPTS: CONNECTION_CONFIG.maxReconnectAttempts * 2, // 10 tentativas
-  RECONNECT_BASE_DELAY: CONNECTION_CONFIG.reconnectDelay - 1000,      // 2 segundos
+  RECONNECT_BASE_DELAY: CONNECTION_CONFIG.reconnectDelay + 1000,      // 4 segundos (menos agressivo)
   QR_TIMEOUT: CONNECTION_CONFIG.handshakeTimeout + 30000,             // 90 segundos
   HANDSHAKE_TIMEOUT: CONNECTION_CONFIG.handshakeTimeout - 15000       // 45 segundos
 } as const;
@@ -1527,8 +1526,6 @@ export default {
   WA_WEB_URL,
   WA_SOCKET_URL,
   WA_UPLOAD_URL,
-  CALL_VIDEO_PREFIX,
-  CALL_AUDIO_PREFIX,
   DEFAULT_USER_AGENT,
   DEFAULT_ORIGIN,
   CONNECTION_CONFIG,
@@ -1551,7 +1548,7 @@ export default {
   AUTH_CONFIG,
   DEFAULT_CACHE_TTLS,
   WS_CLIENT_CONFIG,
-  // KEY_BUNDLE_TYPE já definido em AUTH_CONFIG.KEY_BUNDLE_TYPE
+  WA_CERT_DETAILS,
   CURVE25519_CONSTANTS,
   PROTOCOL_DECODER_CONFIG,
   HANDSHAKE_CONFIG

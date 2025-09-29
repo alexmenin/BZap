@@ -220,7 +220,7 @@ export async function useMultiFileAuthState(folder: string): Promise<{
           const data: { [id: string]: any } = {};
           
           await Promise.all(ids.map(async (id) => {
-            let value = await readData(`${type}-${id}.json`);
+            const value = await readData(`${type}-${id}.json`);
             if (type === 'app-state-sync-key' && value) {
               // Reconstruir objeto protobuf se necessário
               // value = proto.Message.AppStateSyncKeyData.fromObject(value);

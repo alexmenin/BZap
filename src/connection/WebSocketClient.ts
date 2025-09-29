@@ -14,11 +14,10 @@ import { configureSuccessfulPairing, getBinaryNodeChild } from '../utils/Validat
 import { uploadPreKeysToServerIfRequired } from '../utils/PreKeyManager';
 import { encodeBinaryNode } from '../protocol/WABinary/encode';
 import { binaryNodeToString } from '../protocol/WABinary/decode';
-import { QRProcessor } from './QRProcessor';
-import { 
-  WA_SOCKET_URL, 
-  DEFAULT_ORIGIN, 
-  NOISE_CONFIG, 
+import {
+  WA_SOCKET_URL,
+  DEFAULT_ORIGIN,
+  NOISE_CONFIG,
   CONNECTION_CONFIG,
   WS_CLOSE_CODES,
   WS_CLIENT_CONFIG
@@ -99,7 +98,6 @@ export class WebSocketClient extends EventEmitter {
   private proxyConfig?: ProxyConfig;
   private authState?: AuthenticationState; // Estado de autenticação Baileys
   private saveCreds?: () => Promise<void>; // Função para salvar credenciais
-  private qrProcessor?: QRProcessor; // Processador dedicado de QR codes
   private lastDateRecv?: Date; // Última data de recebimento de dados (como no Baileys)
   private lastMessageReceived: Date = new Date(); // Timestamp da última mensagem recebida
   private qrTimer?: NodeJS.Timeout; // Timer para QR codes
@@ -120,42 +118,38 @@ export class WebSocketClient extends EventEmitter {
     this.proxyConfig = proxyConfig;
     this.authState = authState;
     this.saveCreds = saveCreds;
-    
-    // Inicializa QRProcessor se temos authState
-    if (this.authState) {
-      this.qrProcessor = new QRProcessor(this.authState, this.sendNode.bind(this));
-      
-      // Conecta eventos do QRProcessor
-      this.qrProcessor.on('connection.update', (update) => {
-        this.emit('connection.update', update);
-      });
-    } else {
-      console.log('❌ [WEBSOCKET_CLIENT] AuthState não disponível - QRProcessor não será inicializado');
-    }
     this.httpsAgent = this.createAgent();
   }
 
   /**
-   * Envia resposta pong para um ping recebido
+   * Helper unificado para responder pings (normal e dentro de stream:error)
+   * Seguindo EXATAMENTE o padrão Baileys oficial
    */
-  private async sendPong(pingId: string): Promise<void> {
+  private async respondToPing(pingLike: any): Promise<void> {
     try {
-      console.log(`🏓 Enviando pong para ping ID: ${pingId}`);
-      
-      const pongNode = {
+      const id = pingLike?.attrs?.id ?? pingLike?.attrs?.t;
+      if (!id) {
+        console.warn('⚠️ Ping sem id/t; não é possível responder.');
+        return;
+      }
+
+      const pong: any = {
         tag: 'iq',
         attrs: {
+          to: 's.whatsapp.net',
           type: 'result',
-          id: pingId
+          id
         }
       };
-      
-      await this.sendNode(pongNode);
-      console.log(`✅ Pong enviado com sucesso para ping ID: ${pingId}`);
-    } catch (error) {
-      console.error(`❌ Erro ao enviar pong para ping ID ${pingId}:`, error);
+
+      await this.sendNode(pong);
+      this.lastMessageReceived = new Date();
+      console.log('✅ Pong enviado (id=%s) para s.whatsapp.net', id);
+    } catch (err: any) {
+      console.error('❌ Falha ao enviar pong:', err?.message ?? err);
     }
   }
+
 
   /**
    * Cria agent HTTP/HTTPS com suporte a proxy
@@ -164,7 +158,7 @@ export class WebSocketClient extends EventEmitter {
     if (this.proxyConfig?.enabled) {
       const proxyUrl = this.buildProxyUrl();
       console.log(`🌐 Configurando proxy: ${this.proxyConfig.type}://${this.proxyConfig.host}:${this.proxyConfig.port}`);
-      
+
       switch (this.proxyConfig.type) {
         case 'http':
         case 'https':
@@ -176,7 +170,7 @@ export class WebSocketClient extends EventEmitter {
           throw new Error(`Tipo de proxy não suportado: ${this.proxyConfig.type}`);
       }
     }
-    
+
     // Agent padrão sem proxy
     return new Agent({
       keepAlive: true,
@@ -207,48 +201,48 @@ export class WebSocketClient extends EventEmitter {
   private async validateConnection(): Promise<void> {
     try {
       console.log('🤝 Iniciando handshake...');
-      
+
       // Verifica se o estado de autenticação foi fornecido
       if (!this.authState) {
         throw new Error('Estado de autenticação Baileys não fornecido para o handshake');
       }
-      
+
       // Initialize NoiseHandler
-       this.noiseHandler = makeNoiseHandler({
-         keyPair: {
+      this.noiseHandler = makeNoiseHandler({
+        keyPair: {
           public: Buffer.from(this.authState.creds.pairingEphemeralKeyPair.public),
           private: Buffer.from(this.authState.creds.pairingEphemeralKeyPair.private)
         },
-         NOISE_HEADER: WA_CONN_HEADER,
-         logger: console as any
-       });
-      
+        NOISE_HEADER: WA_CONN_HEADER,
+        logger: console as any
+      });
+
       // 1. Envia ClientHello com chave efêmera (seguindo padrão Baileys)
       let helloMsg: waproto.IHandshakeMessage = {
         clientHello: { ephemeral: this.authState.creds.pairingEphemeralKeyPair.public }
       };
       helloMsg = waproto.HandshakeMessage.create(helloMsg);
-      
+
       console.log('📤 Enviando ClientHello...');
       const init = waproto.HandshakeMessage.encode(helloMsg).finish();
       this.sendFrame(Buffer.from(init));
-      
+
       // 2. Aguarda resposta do servidor (ServerHello)
       const serverResponseBuffer = await this.awaitNextMessage(HANDSHAKE_TIMEOUT);
-      
+
       // 3. Decodifica ServerHello usando protobuf (seguindo padrão Baileys)
       const handshake = waproto.HandshakeMessage.decode(serverResponseBuffer);
       console.log('📥 ServerHello recebido');
-      
+
       // 4. Processa handshake com protocolo Noise
       const keyEnc = await this.noiseHandler.processHandshake(handshake, this.authState.creds.noiseKey);
       if (!keyEnc) {
         throw new Error('Falha ao processar resposta do servidor');
       }
-      
+
       // 5. Gera o payload de autenticação correto (login ou registro) - seguindo padrão Baileys
       console.log('📤 Criando ClientFinish com ClientPayload...');
-      
+
       // Configuração do socket baseada nas credenciais (padrão Baileys)
       const socketConfig: SocketConfig = {
         browser: ['Chrome', 'Desktop', '131.0.0.0'],
@@ -256,7 +250,7 @@ export class WebSocketClient extends EventEmitter {
         syncFullHistory: false,
         countryCode: 'BR'
       };
-      
+
       let node: waproto.IClientPayload;
       if (!this.authState.creds.me) {
         // Para registro, usar generateRegistrationNode do Baileys
@@ -274,7 +268,7 @@ export class WebSocketClient extends EventEmitter {
         node = generateLoginNode(this.authState.creds.me.id, socketConfig);
         console.log('✅ Payload de login gerado (generateLoginNode)');
       }
-      
+
       // 6. Criptografa e envia ClientFinish (seguindo padrão Baileys)
       const payloadEnc = this.noiseHandler.encrypt(waproto.ClientPayload.encode(node).finish());
       const clientFinishBuffer = waproto.HandshakeMessage.encode({
@@ -283,29 +277,22 @@ export class WebSocketClient extends EventEmitter {
           payload: payloadEnc
         }
       }).finish();
-      
+
       console.log('📤 Enviando ClientFinish...');
       this.sendFrame(Buffer.from(clientFinishBuffer));
-      
-      // 7. Finaliza inicialização (noise.finishInit()) - seguindo padrão Baileys
+
+      // 7. Finaliza inicialização (noise.finishInit()) - seguindo padrão Baileys original
       this.noiseHandler.finishInit();
       console.log('✅ Protocolo Noise inicializado - handshake concluído');
-      
+
       console.log('🎉 Handshake concluído - aguardando pair-device do servidor');
-      
+
     } catch (error) {
       console.error('❌ Erro na validação da conexão:', error);
       throw error;
     }
   }
 
-  /**
-   * Gera um ID único para mensagens
-   */
-  private generateMessageId(): string {
-    return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-  }
-  
   /**
    * Aguarda próxima mensagem do WebSocket
    */
@@ -315,13 +302,13 @@ export class WebSocketClient extends EventEmitter {
         this.removeListener('frame', frameHandler);
         reject(new Error(`Timeout aguardando resposta do servidor (${timeout}ms)`));
       }, timeout);
-      
+
       const frameHandler = (frame: Buffer) => {
         clearTimeout(timeoutId);
         this.removeListener('frame', frameHandler);
         resolve(frame);
       };
-      
+
       this.once('frame', frameHandler);
     });
   }
@@ -346,138 +333,44 @@ export class WebSocketClient extends EventEmitter {
   /**
    * Processa frame decodificado e emite eventos apropriados
    */
-  private processDecodedFrame(frame: any): void {
+  private async processDecodedFrame(frame: any): Promise<void> {
     try {
       let anyTriggered = false;
-      
-      // Emite evento 'frame' primeiro (padrão Baileys)
-      anyTriggered = this.emit('frame', frame);
-      
+
       // Se é um binary node (não Uint8Array)
       if (!(frame instanceof Uint8Array)) {
         const msgId = frame.attrs?.id;
         const frameTag = frame.tag;
-        
+
         // Emite evento por ID da mensagem (padrão Baileys)
         if (msgId) {
           anyTriggered = this.emit(`TAG:${msgId}`, frame) || anyTriggered;
         }
-        
+
         // Emite eventos por callback pattern (padrão Baileys oficial)
         const l0 = frameTag;
         const l1 = frame.attrs || {};
         const l2 = Array.isArray(frame.content) ? frame.content[0]?.tag : '';
-        
+
         // Padrão Baileys: CB:tag,attr:value,content
         for (const key of Object.keys(l1)) {
           const eventName1 = `CB:${l0},${key}:${l1[key]},${l2}`;
           const eventName2 = `CB:${l0},${key}:${l1[key]}`;
           const eventName3 = `CB:${l0},${key}`;
-          
+
           anyTriggered = this.emit(eventName1, frame) || anyTriggered;
           anyTriggered = this.emit(eventName2, frame) || anyTriggered;
           anyTriggered = this.emit(eventName3, frame) || anyTriggered;
         }
-        
+
         const eventName4 = `CB:${l0},,${l2}`;
         const eventName5 = `CB:${l0}`;
-        
+
         anyTriggered = this.emit(eventName4, frame) || anyTriggered;
         anyTriggered = this.emit(eventName5, frame) || anyTriggered;
       }
     } catch (error) {
-        // Erro ao processar frame decodificado - silencioso para evitar spam
-      }
-  }
-
-
-  
-  /**
-   * Processa pair-device imediatamente seguindo exatamente o padrão Baileys
-   */
-  private async processarPairDeviceImediatamente(stanza: any): Promise<void> {
-    try {
-      console.log('🚀 [PAIR-DEVICE] PROCESSAMENTO DIRETO INICIADO');
-      
-      // 1. Envia resposta IQ imediatamente (padrão Baileys)
-      const iq = {
-        tag: 'iq',
-        attrs: {
-          to: 's.whatsapp.net',
-          type: 'result',
-          id: stanza.attrs.id
-        }
-      };
-      
-      await this.sendNode(iq);
-      console.log('✅ [PAIR-DEVICE] Resposta IQ enviada');
-      
-      // 2. Extrai refs diretamente do stanza (padrão Baileys)
-      const pairDeviceNode = this.getBinaryNodeChild(stanza, 'pair-device');
-      const refNodes = this.getBinaryNodeChildren(pairDeviceNode, 'ref');
-      
-      console.log(`🔍 [PAIR-DEVICE] Encontrados ${refNodes.length} refs`);
-      
-      if (refNodes.length === 0) {
-        console.log('❌ [PAIR-DEVICE] Nenhum ref encontrado');
-        return;
-      }
-      
-      // 3. Prepara chaves (padrão Baileys)
-      const noiseKeyB64 = Buffer.from(this.authState!.creds.noiseKey.public).toString('base64');
-      const identityKeyB64 = Buffer.from(this.authState!.creds.signedIdentityKey.public).toString('base64');
-      const advB64 = this.authState!.creds.advSecretKey;
-      
-      // Log removido para evitar spam
-      // console.log('🔑 [PAIR-DEVICE] Chaves preparadas');
-      
-      // 4. Gera QR codes seguindo exatamente o padrão Baileys oficial
-      let qrMs = 60_000; // 60 segundos para o primeiro QR
-      
-      const genPairQR = () => {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-          console.log('⚠️ [PAIR-DEVICE] WebSocket fechado, parando QR');
-          return;
-        }
-
-        const refNode = refNodes.shift();
-        if (!refNode) {
-          console.log('❌ [PAIR-DEVICE] Todos os refs utilizados - timeout');
-          this.emit('connection.update', { 
-            connection: 'close',
-            lastDisconnect: {
-              error: new Error('QR refs attempts ended'),
-              date: new Date()
-            }
-          });
-          return;
-        }
-
-        // Extrai ref seguindo padrão Baileys
-        const ref = (refNode.content as Buffer).toString('utf-8');
-        
-        // Constrói QR seguindo formato oficial Baileys
-        const qr = [ref, noiseKeyB64, identityKeyB64, advB64].join(',');
-        
-        console.log('\n🎯 ===== QR CODE GERADO (BAILEYS DIRETO) =====');
-        console.log(`📱 QR: ${qr}`);
-        console.log(`📏 Tamanho: ${qr.length} caracteres`);
-        console.log(`⏰ Expira em: ${qrMs / 1000}s`);
-        console.log('🎯 ==========================================\n');
-        
-        // Emite QR seguindo padrão Baileys
-        this.emit('connection.update', { qr });
-        
-        // Agenda próximo QR
-        setTimeout(genPairQR, qrMs);
-        qrMs = 20_000; // 20s para próximos QRs
-      };
-      
-      // Inicia geração imediatamente
-      genPairQR();
-      
-    } catch (error) {
-      console.error('❌ [PAIR-DEVICE] Erro no processamento:', error);
+      // Erro ao processar frame decodificado - silencioso para evitar spam
     }
   }
 
@@ -488,7 +381,7 @@ export class WebSocketClient extends EventEmitter {
     if (!node || !node.content || !Array.isArray(node.content)) {
       return null;
     }
-    
+
     return node.content.find((child: any) => child && child.tag === childTag);
   }
 
@@ -499,28 +392,8 @@ export class WebSocketClient extends EventEmitter {
     if (!node || !node.content || !Array.isArray(node.content)) {
       return [];
     }
-    
-    return node.content.filter((child: any) => child && child.tag === childTag);
-  }
 
-  /**
-   * Constrói nome do evento seguindo padrão Baileys: CB:tag,attr1:value1,attr2:value2
-   */
-  private buildEventName(node: any): string {
-    let eventName = `CB:${node.tag}`;
-    
-    if (node.attrs) {
-      const attrs = Object.entries(node.attrs)
-        .filter(([key, value]) => value !== undefined && value !== null)
-        .map(([key, value]) => `${key}:${value}`)
-        .join(',');
-      
-      if (attrs) {
-        eventName += `,${attrs}`;
-      }
-    }
-    
-    return eventName;
+    return node.content.filter((child: any) => child && child.tag === childTag);
   }
 
   /**
@@ -529,22 +402,22 @@ export class WebSocketClient extends EventEmitter {
   private encodeFrame(data: Buffer): Buffer {
     // Se o handshake não estiver finalizado, os dados são enviados sem criptografia
     // (no Baileys, isFinished controla se deve criptografar)
-    
+
     const header = Buffer.from(WA_CONN_HEADER);
     const introSize = this.headerSent ? 0 : header.length;
     const frame = Buffer.alloc(introSize + 3 + data.length);
-    
+
     if (!this.headerSent) {
       frame.set(header);
       this.headerSent = true;
       // Frame enviado - log removido para evitar spam
     }
-    
+
     // Tamanho em 3 bytes (big-endian) - exatamente como no Baileys
     frame.writeUInt8(data.length >> 16, introSize);
     frame.writeUInt16BE(65535 & data.length, introSize + 1);
     frame.set(data, introSize + 3);
-    
+
     return frame;
   }
 
@@ -555,12 +428,12 @@ export class WebSocketClient extends EventEmitter {
     if (!this.isConnected || !this.ws) {
       throw new Error('WebSocket não está conectado');
     }
-    
+
     const frame = this.encodeFrame(data);
-    
+
     // Log dos dados enviados
     this.logBinaryData('SEND', frame);
-    
+
     this.ws.send(frame);
   }
 
@@ -578,15 +451,15 @@ export class WebSocketClient extends EventEmitter {
       console.log(`📍 URL: ${WA_WS_URL}`);
       console.log(`🌐 Proxy: ${this.proxyConfig?.enabled ? `${this.proxyConfig.type}://${this.proxyConfig.host}:${this.proxyConfig.port}` : 'Não configurado'}`);
       console.log(`⏱️ Timeout: ${DEFAULT_CONNECTION_TIMEOUT}ms`);
-      
+
       // Reset do flag do header para nova conexão
       this.headerSent = false;
-      
+
       // Reset das flags de controle de eventos para nova conexão
       this.streamEnded = false;
       this.connectionClosed = false;
       this.lastCloseReason = undefined;
-      
+
       // Timeout de conexão
       this.connectionTimeout = setTimeout(() => {
         if (this.ws) {
@@ -594,7 +467,7 @@ export class WebSocketClient extends EventEmitter {
         }
         reject(new Error('Timeout na conexão WebSocket'));
       }, DEFAULT_CONNECTION_TIMEOUT);
-      
+
       this.ws = new WebSocket(WA_WS_URL, {
         origin: WA_ORIGIN,
         agent: this.httpsAgent,
@@ -609,37 +482,37 @@ export class WebSocketClient extends EventEmitter {
         console.log(`🔗 URL: ${WA_WS_URL}`);
         console.log(`🌐 Proxy: ${this.proxyConfig?.enabled ? 'Habilitado' : 'Desabilitado'}`);
         console.log(`🔄 Tentativa: ${this.reconnectAttempts + 1}`);
-        
+
         if (this.connectionTimeout) {
           clearTimeout(this.connectionTimeout);
           this.connectionTimeout = undefined;
         }
-        
+
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.lastDateRecv = new Date(); // Inicializa timestamp de recebimento
-        
+
         // Configura os listeners ANTES do handshake para capturar pair-device
         console.log('🔧 [SETUP] Configurando setupServerEventListeners...');
         this.setupServerEventListeners();
         console.log('🔧 [SETUP] setupServerEventListeners configurado com sucesso');
-        
+
         // Inicia o processo de validação da conexão (handshake) IMEDIATAMENTE
         // seguindo exatamente o fluxo do Baileys original
         try {
           await this.validateConnection();
           console.log('🤝 Handshake inicial concluído - aguardando eventos do servidor...');
-          
+
           // Após o handshake, configura os handlers Baileys e keep-alive
           console.log('🔧 [SETUP] Configurando setupBaileysEventHandlers...');
           this.setupBaileysEventHandlers();
           console.log('🔧 [SETUP] setupBaileysEventHandlers configurado com sucesso');
-          
+
           this.startKeepAlive();
-          
+
           // NÃO emitir 'connected' aqui - será emitido quando receber success ou pair-device
           resolve();
-          
+
         } catch (error) {
           console.error('❌ Erro na validação da conexão:', error);
           this.emit('error', error);
@@ -652,27 +525,25 @@ export class WebSocketClient extends EventEmitter {
         this.lastDateRecv = new Date(); // Atualiza timestamp sempre que recebe dados
         console.log(`📨 Dados recebidos: ${data.length} bytes`);
         this.logBinaryData('RECV', data);
-        
+
         // Processa dados através do NoiseHandler seguindo padrão Baileys-master
-        if (this.noiseHandler && this.noiseHandler.decodeFrame) {
-          this.noiseHandler.decodeFrame(data, (frame: Buffer) => {
-            // Mostra o XML diretamente aqui
-            if (frame && typeof frame === 'object' && (frame as any).tag) {
-              try {
-                const xmlString = binaryNodeToString(frame as any);
-                console.log(`📋 XML DECODIFICADO:`);
-                console.log(xmlString);
-              } catch (error) {
-                console.error('❌ Erro ao converter para XML:', error);
-              }
-            }
-            
-            this.emit('frame', frame);
-          });
-        } else {
-          // Fallback para dados brutos se NoiseHandler não estiver disponível
-          this.emit('message', data);
-        }
+        // dentro do decodeFrame callback
+        this.noiseHandler.decodeFrame(data, async (frame: Buffer | any) => {
+          // log do XML se tiver .tag
+          if ((frame as any)?.tag) {
+            try {
+              const xmlString = binaryNodeToString(frame as any)
+              console.log('📋 XML DECODIFICADO:')
+              console.log(xmlString)
+            } catch { }
+          }
+
+          // ✅ emita o evento 'frame' AQUI
+          this.emit('frame', frame)
+
+          // ❌ não chame processDecodedFrame diretamente aqui
+          // await this.processDecodedFrame(frame)  <-- remova
+        })
       });
 
       this.ws.on('close', (code: number, reason: Buffer) => {
@@ -683,10 +554,10 @@ export class WebSocketClient extends EventEmitter {
         console.log(`   - Motivo: ${reasonStr || 'Não especificado'}`);
         console.log(`   - Tentativas de reconexão: ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
         console.log(`   - Proxy habilitado: ${this.proxyConfig?.enabled ? 'Sim' : 'Não'}`);
-        
+
         this.cleanup();
         this.emit('disconnected', code, reasonStr);
-        
+
         // Auto-reconexão para códigos específicos
         if (this.shouldReconnect(code)) {
           this.scheduleReconnect();
@@ -695,7 +566,7 @@ export class WebSocketClient extends EventEmitter {
 
       this.ws.on('error', (error: Error) => {
         console.error('❌ Erro no WebSocket:', error.message);
-        
+
         // Tratamento específico para erro de conflito (múltiplas conexões)
         if (error.message.includes('Stream Errored (conflict)') || error.message.includes('conflict')) {
           console.log('⚠️ Detectado erro de conflito - aguardando antes de reconectar...');
@@ -706,7 +577,7 @@ export class WebSocketClient extends EventEmitter {
           }, 5000); // 5 segundos de delay
           return;
         }
-        
+
         this.cleanup();
         this.emit('error', error);
         reject(error);
@@ -739,9 +610,11 @@ export class WebSocketClient extends EventEmitter {
     //   attrs: node.attrs,
     //   hasContent: !!node.content
     // });
-    
+
     // Codifica o nó binário usando encoder oficial do WABinary (função assíncrona)
     const encoded = await encodeBinaryNode(node);
+    console.log('DEBUG PONG XML:', binaryNodeToString(node));
+    console.log('DEBUG PONG HEX:', encoded.toString('hex'));
     return this.sendBinaryNode(encoded);
   }
 
@@ -750,22 +623,46 @@ export class WebSocketClient extends EventEmitter {
    */
   private async sendBinaryNode(data: Buffer): Promise<void> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.error('❌ Tentativa de envio com WebSocket não conectado:', {
+        wsExists: !!this.ws,
+        readyState: this.ws?.readyState,
+        expectedState: WebSocket.OPEN
+      });
       throw new Error('WebSocket não está conectado');
     }
 
     try {
-      let frame = data;
-      
-      // Envia através do NoiseHandler se disponível
-      if (this.noiseHandler) {
-        frame = this.noiseHandler.encodeFrame(data);
+      let frame: Buffer;
+
+      // Separação correta: NoiseHandler faz apenas criptografia, WebSocketClient faz framing
+      if (this.noiseHandler && this.noiseHandler.isFinished()) {
+        console.log('🔐 Criptografando dados através do NoiseHandler...');
+        const encrypted = this.noiseHandler.encrypt(data); // apenas criptografia
+        frame = this.encodeFrame(encrypted); // framing (header + length prefix) feito aqui
+      } else {
+        // Sem NoiseHandler ou handshake não finalizado, usa framing direto
+        frame = this.encodeFrame(data);
       }
-      
+
+      console.log('📤 Enviando frame binário:', {
+        originalSize: data.length,
+        encodedSize: frame.length,
+        hasNoiseHandler: !!this.noiseHandler,
+        isHandshakeFinished: this.noiseHandler?.isFinished()
+      });
+
       this.ws.send(frame);
       this.logBinaryData('SEND', frame);
-      
-    } catch (error) {
-      console.error('❌ Erro ao enviar dados binários:', error);
+
+      console.log('✅ Frame enviado com sucesso');
+
+    } catch (error: any) {
+      console.error('❌ Erro ao enviar dados binários:', {
+        error: error.message,
+        stack: error.stack,
+        wsReadyState: this.ws?.readyState,
+        dataSize: data.length
+      });
       throw error;
     }
   }
@@ -775,7 +672,7 @@ export class WebSocketClient extends EventEmitter {
    */
   private setupBaileysEventHandlers(): void {
     console.log('🎧 Configurando handlers de eventos Baileys...');
-    
+
     // Emite connection.update inicial seguindo padrão Baileys (process.nextTick equivalente)
     process.nextTick(() => {
       this.emit('connection.update', {
@@ -784,63 +681,62 @@ export class WebSocketClient extends EventEmitter {
         qr: undefined
       });
     });
-    
+
     // Listeners para eventos específicos do protocolo WhatsApp
-    
+
     // Resposta automática para pings do servidor (keep-alive) - padrão Baileys oficial
-    // IMPORTANTE: Pings normais vêm como CB:iq,type:get,xmlns:w:p
-    // Pings dentro de stream:error são ERROS e devem encerrar a conexão
-    this.on('CB:iq,type:get,xmlns:w:p', async (stanza: any) => {
-      try {
-        console.log('🏓 Ping keep-alive recebido do servidor, respondendo...');
-        
-        // Responde com pong (iq result) - padrão Baileys oficial
-        const pong = {
-          tag: 'iq',
-          attrs: {
-            to: 's.whatsapp.net',
-            type: 'result',
-            id: stanza.attrs.id
-          },
-          content: [{ tag: 'pong', attrs: {} }]
-        };
-        
-        await this.sendNode(pong);
-        console.log('✅ Pong enviado com sucesso');
-        
-        // Atualiza timestamp da última mensagem recebida
-        this.lastMessageReceived = new Date();
-        
-      } catch (error) {
-        console.error('❌ Erro ao responder ping keep-alive:', error);
+    // IMPORTANTE: Pings normais vêm como CB:iq,type:get,xmlns:urn:xmpp:ping
+    // captura por tipo e filtra por xmlns dentro
+    this.on('CB:iq,type:get', async (stanza: any) => {
+      if (stanza?.attrs?.xmlns === 'urn:xmpp:ping') {
+        await this.respondToPing(stanza)
       }
-    });
-    
-    this.on('CB:stream:error', (node: any) => {
-      
-      // Extrai o motivo do erro seguindo exatamente o padrão Baileys
+    })
+
+    // fallback: captura por xmlns
+    this.on('CB:iq,xmlns:urn:xmpp:ping', async (stanza: any) => {
+      await this.respondToPing(stanza)
+    })
+
+
+    this.on('CB:stream:error', async (node: any) => {
+      // IMPORTANTE: Verificar se é erro relacionado a ping mal formado
       const reasonNode = node.content?.[0];
-      let reason = reasonNode?.tag || 'unknown';
-      const statusCode = +(node.attrs?.code || 500);
-      
-      
-      // Seguindo padrão Baileys oficial: SEMPRE encerra a conexão para qualquer stream:error
+      if (reasonNode?.tag === 'ping') {
+          console.warn('⚠️ Stream error (ping) recebido - ignorando como faz o Baileys');
+
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.close(1000, 'pong malformed');
+        }
+        return;
+      }
+
+
+      // Para outros tipos de stream:error, logar normalmente
+      console.error('❌ Stream errored out:', node);
+
+      // Seguindo EXATAMENTE o padrão Baileys original
+      const { reason, statusCode } = this.getErrorCodeFromStreamError(node);
+
+      // Cria erro no formato Boom (padrão Baileys)
+      const streamError = new Error(`Stream Errored (${reason})`);
+      (streamError as any).output = { statusCode, data: node };
+
       // Evita emitir múltiplos eventos 'close' para o mesmo erro de stream
       const streamErrorMessage = `Stream Errored (${reason})`;
       if (!this.connectionClosed || this.lastCloseReason !== streamErrorMessage) {
         this.connectionClosed = true;
         this.lastCloseReason = streamErrorMessage;
-        
+
         this.emit('connection.update', {
           connection: 'close',
           lastDisconnect: {
-            error: new Error(streamErrorMessage),
-            date: new Date(),
-            output: { statusCode }
+            error: streamError,
+            date: new Date()
           }
         });
       }
-      
+
       // Fecha a conexão adequadamente (seguindo padrão Baileys)
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.close(1000, streamErrorMessage);
@@ -848,21 +744,21 @@ export class WebSocketClient extends EventEmitter {
     });
 
     this.on('CB:xmlstreamend', () => {
-      
+
       // Evita processamento repetido do xmlstreamend
       if (this.streamEnded) {
         return;
       }
-      
+
       this.streamEnded = true;
-      
+
       // Seguindo padrão Baileys oficial: emite connection.update com connectionClosed
       // Evita emitir múltiplos eventos 'close' para xmlstreamend
       const xmlStreamEndMessage = 'Connection Terminated by Server';
       if (!this.connectionClosed || this.lastCloseReason !== xmlStreamEndMessage) {
         this.connectionClosed = true;
         this.lastCloseReason = xmlStreamEndMessage;
-        
+
         this.emit('connection.update', {
           connection: 'close',
           lastDisconnect: {
@@ -871,27 +767,24 @@ export class WebSocketClient extends EventEmitter {
           }
         });
       }
-      
+
       // Fecha a conexão WebSocket adequadamente
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.close(1000, 'Stream ended by server');
       }
     });
 
-    this.on('CB:iq,type:set,pair-device', async (stanza: any) => {
-      await this.handlePairDevice(stanza);
-    });
-    
     // Pair device handler - processa solicitação de pareamento no conteúdo
+    // Mantendo apenas CB:iq,,pair-device como no Baileys (removendo duplicata)
     this.on('CB:iq,,pair-device', async (stanza: any) => {
       await this.handlePairDevice(stanza);
     });
-    
+
     // Pair success handler - processa pareamento bem-sucedido
     this.on('CB:iq,,pair-success', async (stanza: any) => {
       await this.handlePairSuccess(stanza);
     });
-    
+
     // Success handler - processa nó 'success' do servidor (padrão Baileys)
     this.on('CB:success', async (node: any) => {
       try {
@@ -899,120 +792,53 @@ export class WebSocketClient extends EventEmitter {
         if (this.authState) {
           await uploadPreKeysToServerIfRequired(this.authState, this.sendNode.bind(this));
         }
-        
+
         // Envia passive IQ 'active' (seguindo padrão Baileys)
         await this.sendPassiveIq('active');
-        
+
       } catch (err: any) {
         console.warn('⚠️ Falha ao enviar passive IQ inicial:', err);
       }
-      
+
       await this.handleConnectionSuccess(node);
     });
-    
-    // Stream errors
-    this.on('CB:stream:error', (node: any) => {
-      this.handleStreamError(node);
-    });
-    
+
     // Connection failures
     this.on('CB:failure', (node: any) => {
       this.handleConnectionFailure(node);
     });
-
-    // MD event handler - processa mensagens iq com conteúdo md
-    this.on('CB:iq,md', async (stanza: any) => {
-      await this.handleMdEvent(stanza);
-    });
   }
-  
 
-  
-  /**
-   * Inicia processo de geração de QR codes seguindo padrão Baileys
-   */
-
-  
-  /**
-   * Processa evento pair-success seguindo padrão Baileys
-   */
-  private async handlePairSuccessEvent(stanza: any): Promise<void> {
-    console.log('✅ Pareamento bem-sucedido:', stanza);
-    
-    try {
-      if (!this.authState?.creds) {
-        throw new Error('AuthState não disponível para pareamento');
-      }
-
-      const { reply, creds: updatedCreds } = configureSuccessfulPairing(stanza, this.authState.creds);
-      
-      console.log('🔄 Pareamento configurado com sucesso, conexão será reiniciada...');
-      
-      // Atualiza as credenciais
-      Object.assign(this.authState.creds, updatedCreds);
-      
-      // Emite eventos seguindo padrão Baileys original
-      this.emit('creds.update', updatedCreds);
-      this.emit('connection.update', { isNewLogin: true, qr: undefined });
-      
-      // Envia resposta para o servidor
-      await this.sendNode(reply);
-      
-      // Salva as credenciais se a função estiver disponível
-      if (this.saveCreds) {
-        await this.saveCreds();
-      }
-      
-    } catch (error: any) {
-      console.error('❌ Erro no pareamento:', error);
-      
-      // Evita emitir múltiplos eventos 'close' para o mesmo erro
-      const errorMessage = error?.message || 'Erro no pareamento';
-      if (!this.connectionClosed || this.lastCloseReason !== errorMessage) {
-        this.connectionClosed = true;
-        this.lastCloseReason = errorMessage;
-        
-        this.emit('connection.update', {
-          connection: 'close',
-          lastDisconnect: {
-            error: error,
-            date: new Date()
-          }
-        });
-      }
-    }
-  }
-  
   /**
    * Processa sucesso da conexão seguindo padrão Baileys
    */
   private async handleConnectionSuccess(node: any): Promise<void> {
     console.log('✅ Conexão estabelecida com sucesso:', node);
-    
+
     try {
       // Upload de pre-keys e passive IQ serão feitos no evento CB:success
       // após o handshake estar completamente finalizado
-      
+
       console.log('🌐 Conexão aberta para WhatsApp');
-      
+
       // Atualiza credenciais com LID se disponível
       if (node.attrs?.lid && this.authState?.creds.me?.id) {
         const updatedCreds = {
           me: { ...this.authState.creds.me, lid: node.attrs.lid }
         };
-        
+
         Object.assign(this.authState.creds, updatedCreds);
         this.emit('creds.update', updatedCreds);
-        
+
         // Salva as credenciais se a função estiver disponível
         if (this.saveCreds) {
           await this.saveCreds();
         }
       }
-      
+
       // Emite evento connection.update seguindo padrão Baileys
       this.emit('connection.update', { connection: 'open' });
-      
+
     } catch (error: any) {
       console.warn('⚠️ Erro no processamento do success:', error);
       // Mesmo com erro, consideramos a conexão aberta
@@ -1020,211 +846,68 @@ export class WebSocketClient extends EventEmitter {
       this.emit('connection.update', { connection: 'open' });
     }
   }
-  
-  /**
-   * Processa solicitação de pareamento (pair-device)
-   */
+
   /**
    * Processa evento pair-device seguindo exatamente o padrão Baileys oficial
    */
   private async handlePairDevice(stanza: any): Promise<void> {
-    try {
-      // Primeiro envia resposta IQ (acknowledgment) - padrão Baileys oficial
-      const iq = {
-        tag: 'iq',
-        attrs: {
-          to: 's.whatsapp.net',
-          type: 'result',
-          id: stanza.attrs.id
-        }
-      };
-      
-      await this.sendNode(iq);
-      
-      // Extrai nós de referência QR diretamente do stanza - padrão Baileys oficial
-      const pairDeviceNode = this.getBinaryNodeChild(stanza, 'pair-device');
-      const refNodes = this.getBinaryNodeChildren(pairDeviceNode, 'ref');
-      
-      if (!refNodes || refNodes.length === 0) {
-        console.error('❌ Nenhuma referência QR encontrada no pair-device');
-        return;
-      }
-      
-      // Log removido para evitar spam
-      // console.log(`📱 Encontradas ${refNodes.length} referências QR`);
-      
-      // Prepara dados para QR seguindo padrão Baileys oficial
-      const noiseKeyB64 = Buffer.from(this.authState!.creds.noiseKey.public).toString('base64');
-      const identityKeyB64 = Buffer.from(this.authState!.creds.signedIdentityKey.public).toString('base64');
-      const advB64 = this.authState!.creds.advSecretKey;
-      
-      // Log removido para evitar spam
-      // console.log('🔑 Chaves preparadas para QR code');
-      
-      // Inicia geração de QR codes seguindo exatamente o padrão Baileys oficial
-      let qrMs = 60_000; // tempo inicial para QR viver (60 segundos) - padrão Baileys oficial
-      
-      const genPairQR = () => {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-          console.log('⚠️ WebSocket não está aberto, parando geração de QR');
-          return;
-        }
-
-        const refNode = refNodes.shift();
-        if (!refNode) {
-          console.log('❌ Todas as referências QR foram utilizadas - encerrando por timeout');
-          // Segue exatamente o padrão Baileys: DisconnectReason.timedOut
-          this.emit('connection.update', { 
-            connection: 'close',
-            lastDisconnect: {
-              error: new Error('QR refs attempts ended'),
-              date: new Date()
-            }
-          });
-          return;
-        }
-
-        // Extrai referência do nó - padrão Baileys oficial
-        const ref = (refNode.content as Buffer).toString('utf-8');
-        
-        // Constrói QR code no formato WhatsApp oficial: ref,noiseKey,identityKey,advKey
-        const qr = [ref, noiseKeyB64, identityKeyB64, advB64].join(',');
-        
-        // Logs de QR code removidos para evitar spam
-        // console.log('\n🎯 ===== QR CODE GERADO (PADRÃO BAILEYS OFICIAL) =====');
-        // console.log(`📱 QR Code: ${qr}`);
-        // console.log(`📏 Tamanho: ${qr.length} caracteres`);
-        // console.log(`⏰ Expira em: ${qrMs / 1000} segundos`);
-        // console.log('🎯 ====================================================\n');
-        
-        // Emite evento connection.update com QR - padrão Baileys oficial
-        this.emit('connection.update', { qr });
-        
-        // Agenda próximo QR code - padrão Baileys oficial
-        this.qrTimer = setTimeout(genPairQR, qrMs);
-        qrMs = 20_000; // QRs subsequentes duram 20 segundos - padrão Baileys oficial
-      };
-      
-      // Inicia geração do primeiro QR code
-      genPairQR();
-      
-    } catch (error) {
-      console.error('❌ Erro ao processar pair-device:', error);
-      this.emit('connection.update', {
-        connection: 'close',
-        lastDisconnect: {
-          error: error instanceof Error ? error : new Error(String(error)),
-          date: new Date()
-        }
-      });
-    }
-  }
-
-  /**
-   * Inicia o processo de geração de QR codes com rotação automática
-   */
-  private startQRGeneration(): void {
-    if (!this.qrRefs || this.qrRefs.length === 0) {
-      console.log('❌ Nenhuma referência QR disponível');
-      return;
-    }
-
-    let qrMs = 60000; // tempo inicial para QR viver (60 segundos)
-    
-    const genPairQR = () => {
-      if (!this.isConnected) {
-        console.log('⚠️ WebSocket desconectado, parando geração de QR');
-        return;
-      }
-
-      // No Baileys oficial, os refs são consumidos sequencialmente com shift()
-      // Isso garante que cada QR code use um ref único e fresco
-      if (!this.qrRefs || this.qrRefs.length === 0) {
-        console.log('❌ Todas as referências QR foram utilizadas');
-        this.emit('connection.update', { 
-          connection: 'close',
-          lastDisconnect: {
-            error: new Error('QR refs attempts ended'),
-            date: new Date()
-          }
-        });
-        return;
-      }
-
-      // Consome o próximo ref (padrão Baileys oficial)
-      const refNode = this.qrRefs.shift()!;
-
-      // Extrai referência do nó
-      let ref = '';
-      if (refNode.content) {
-        if (Buffer.isBuffer(refNode.content)) {
-          ref = refNode.content.toString('utf-8');
-        } else if (typeof refNode.content === 'string') {
-          ref = refNode.content;
-        } else {
-          console.error('❌ Formato de referência QR não suportado:', typeof refNode.content);
-          return;
-        }
-      } else {
-        console.error('❌ Nó ref sem conteúdo');
-        return;
-      }
-      
-      console.log('🔍 DEBUG: Referência extraída:', ref.substring(0, 50) + '...');
-      
-      // Constrói QR code no formato WhatsApp: ref,noiseKey,identityKey,advKey
-      const qr = [ref, this.qrCredentials!.noiseKeyB64, this.qrCredentials!.identityKeyB64, this.qrCredentials!.advB64].join(',');
-      
-      console.log('\n🎯 ===== QR CODE GERADO =====');
-      console.log(`📱 QR Code (${this.qrRefs.length} refs restantes)`);
-      console.log(`📋 QR Code Completo: ${qr}`);
-      console.log(`📏 Tamanho: ${qr.length} caracteres`);
-      console.log(`⏰ Expira em: ${qrMs / 1000} segundos`);
-      console.log('🎯 ============================\n');
-      
-      // Calcula tempo de expiração
-      const expiresAt = new Date(Date.now() + qrMs);
-      
-      // Emite evento connection.update com QR (padrão Baileys)
-      this.emit('connection.update', { 
-        qr,
-        qrTotal: this.qrRefs!.length,
-        qrExpiresAt: expiresAt
-      });
-      
-      // Agenda próximo QR code (QRs subsequentes são mais rápidos)
-      this.qrTimer = setTimeout(genPairQR, qrMs);
-      qrMs = 20000; // QRs subsequentes duram 20 segundos
-      
-      console.log(`⏰ Próximo QR code em ${qrMs / 1000} segundos (${this.qrRefs!.length} refs restantes)`);
+    const iq = {
+      tag: 'iq',
+      attrs: { to: 's.whatsapp.net', type: 'result', id: stanza.attrs.id }
     };
+    await this.sendNode(iq);
+
+    const pairDeviceNode = this.getBinaryNodeChild(stanza, 'pair-device');
+    const refNodes = this.getBinaryNodeChildren(pairDeviceNode, 'ref');
+    this.qrRefs = refNodes.map(n => (n.content as Buffer).toString('utf-8'));
+
+    const noiseKeyB64 = Buffer.from(this.authState!.creds.noiseKey.public).toString('base64');
+    const identityKeyB64 = Buffer.from(this.authState!.creds.signedIdentityKey.public).toString('base64');
+    const advB64 = this.authState!.creds.advSecretKey;
+
+    // Gera todos os QRs imediatamente (sem timers) - padrão Baileys
+    console.log(`📱 Gerando ${this.qrRefs.length} QR codes imediatamente`);
     
-    // Inicia geração do primeiro QR
-    console.log('🚀 Iniciando geração do primeiro QR code...');
-    genPairQR();
+    for (let i = 0; i < this.qrRefs.length; i++) {
+      const ref = this.qrRefs[i];
+      const qr = [ref, noiseKeyB64, identityKeyB64, advB64].join(',');
+      
+      this.emit('connection.update', {
+        connection: 'connecting',
+        qr: qr,
+        isNewLogin: true
+      });
+      
+      console.log(`🔄 QR ${i + 1}/${this.qrRefs.length} gerado`);
+    }
   }
 
   /**
    * Para a geração de QR codes
    */
   private stopQRGeneration(): void {
+    console.log('🔍 [DEBUG] stopQRGeneration chamado');
     if (this.qrTimer) {
+      console.log(`🔍 [DEBUG] Limpando timer QR: ${this.qrTimer}`);
       clearTimeout(this.qrTimer);
       this.qrTimer = undefined;
-      console.log('⏹️ Geração de QR codes interrompida');
+      console.log('🔍 [DEBUG] Timer QR limpo');
+    } else {
+      console.log('🔍 [DEBUG] Nenhum timer QR para limpar');
     }
+    console.log('⏹️ Geração de QR codes interrompida');
   }
-  
+
   /**
    * Processa evento de pareamento bem-sucedido (pair-success) seguindo padrão Baileys
    */
   private async handlePairSuccess(stanza: any): Promise<void> {
     try {
       console.log('🎉 Pair-success recebido - processando seguindo padrão Baileys');
-      
+
       // Para o timer de QR code imediatamente (como no Baileys oficial)
       this.stopQRGeneration();
-      
+
       // Usa configureSuccessfulPairing do Baileys para processar o pareamento
       const { configureSuccessfulPairing } = require('../utils/ValidateConnection');
       const { reply, creds: updatedCreds } = configureSuccessfulPairing(stanza, this.authState!.creds);
@@ -1235,17 +918,17 @@ export class WebSocketClient extends EventEmitter {
 
       // Emite evento de atualização das credenciais (padrão Baileys)
       this.emit('creds.update', updatedCreds);
-      
+
       // Emite evento de conexão atualizada (padrão Baileys)
-      this.emit('connection.update', { 
-        isNewLogin: true, 
-        qr: undefined 
+      this.emit('connection.update', {
+        isNewLogin: true,
+        qr: undefined
       });
 
       // Envia resposta para o servidor (padrão Baileys)
       await this.sendNode(reply);
       console.log('✅ Resposta de pair-success enviada');
-      
+
     } catch (error) {
       console.error('❌ Erro ao processar pair-success:', error);
       this.emit('connection.update', {
@@ -1257,15 +940,27 @@ export class WebSocketClient extends EventEmitter {
       });
     }
   }
-  
+
   /**
-   * Processa erros de stream
+   * Extrai código de erro de stream:error seguindo padrão Baileys
    */
-  private handleStreamError(node: any): void {
-    // Erro de stream - log removido para evitar spam
-    this.emit('stream-error', node);
+  private getErrorCodeFromStreamError(node: any): { reason: string; statusCode: number } {
+    const child = node?.content?.[0];
+    if (!child) return { reason: 'unknown', statusCode: 500 };
+
+    const tag = child.tag as string;
+
+    // Mapeamento básico alinhado ao que o Baileys faz
+    switch (tag) {
+      case 'conflict': return { reason: 'conflict', statusCode: 409 };
+      case 'shutdown': return { reason: 'shutdown', statusCode: 503 };
+      case 'replaced': return { reason: 'replaced', statusCode: 409 };
+      case 'system-shutdown': return { reason: 'system-shutdown', statusCode: 515 };
+      case 'ping': return { reason: 'ping', statusCode: 200 }; // tratado à parte
+      default: return { reason: tag, statusCode: Number(child?.attrs?.code) || 500 };
+    }
   }
-  
+
   /**
    * Processa falhas de conexão
    */
@@ -1273,83 +968,22 @@ export class WebSocketClient extends EventEmitter {
     console.error('❌ Falha na conexão:', node);
     this.emit('connection-failure', node);
   }
-  
+
   /**
-   * Processa evento MD (Metadata) seguindo padrão Baileys
-   * CORRIGIDO: Só responde IQs do tipo 'get' para evitar loops infinitos
-   */
-  private async handleMdEvent(stanza: any): Promise<void> {
-    try {
-      // Log apenas para IQs importantes (pair-device, device-list, encrypt)
-      const isImportantIq = stanza.content && Array.isArray(stanza.content) && 
-        stanza.content.some((child: any) => 
-          ['pair-device', 'device-list', 'encrypt', 'account'].includes(child.tag)
-        );
-      
-      if (isImportantIq) {
-        // console.log('\n📋 [MD EVENT] IQ MD importante recebido:', {
-        //   type: stanza.attrs?.type,
-        //   id: stanza.attrs?.id,
-        //   contentTags: stanza.content.map((c: any) => c.tag)
-        // });
-      }
-      
-      // CORREÇÃO: Só responde IQs do tipo 'get' para evitar loops infinitos
-      // type="get" → responde com result
-      // type="set" → processa, mas nem sempre responde
-      // type="result" → já é resposta, não precisa responder
-      if (stanza.attrs?.type === 'get' && stanza.attrs?.id) {
-        const iq = {
-          tag: 'iq',
-          attrs: {
-            to: 's.whatsapp.net',
-            type: 'result',
-            id: stanza.attrs.id
-          }
-        };
-        
-        await this.sendNode(iq);
-      } else if (stanza.attrs?.type && stanza.attrs.type !== 'get') {
-        // Log apenas para debug quando não responder
-        if (isImportantIq) {
-          // console.log(`📋 [MD EVENT] IQ type="${stanza.attrs.type}" - não enviando resposta (evita loop)`);
-        }
-      }
-      
-      // Processa diferentes tipos de MD baseado no conteúdo (apenas log para importantes)
-      if (stanza.content && Array.isArray(stanza.content)) {
-        for (const child of stanza.content) {
-          if (child.tag === 'device-list') {
-          } else if (child.tag === 'encrypt') {
-          } else if (child.tag === 'account') {
-          } else if (child.tag === 'pair-device') {
-          }
-          // Não loga outros tipos para reduzir spam
-        }
-      }
-      
-      // Emite evento genérico para compatibilidade
-      this.emit('md-event', stanza);
-      
-    } catch (error) {
-       console.error('❌ Erro ao processar evento MD:', error);
-       this.emit('connection.update', {
-         connection: 'close',
-         lastDisconnect: {
-           error: new Error(`MD processing failed: ${error instanceof Error ? error.message : String(error)}`),
-           date: new Date()
-         }
-       });
-     }
-  }
-  
+ * Processa evento MD (Metadata) seguindo padrão Baileys
+ * Agora só loga e emite evento, sem responder IQs genéricos
+ */
   /**
    * Desconecta do servidor
    */
   public disconnect(): void {
     console.log('🔌 Desconectando...');
+
+    // Para geração de QR codes antes de limpar recursos
+    this.stopQRGeneration();
+
     this.cleanup();
-    
+
     if (this.ws) {
       this.ws.close(1000, 'Desconexão solicitada pelo cliente');
       this.ws = null;
@@ -1361,27 +995,26 @@ export class WebSocketClient extends EventEmitter {
    */
   private cleanup(): void {
     this.isConnected = false;
-    
+
     // Reset da flag de stream ended para permitir reconexões
     this.streamEnded = false;
-    
+
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval);
       this.keepAliveInterval = undefined;
     }
-    
+
     if (this.connectionTimeout) {
       clearTimeout(this.connectionTimeout);
       this.connectionTimeout = undefined;
     }
-    
+
     if (this.qrTimer) {
       clearTimeout(this.qrTimer);
       this.qrTimer = undefined;
     }
-    
-    // Para geração de QR codes
-    this.stopQRGeneration();
+
+    console.log('🔍 [DEBUG] cleanup() chamado - preservando timer QR para reconexão');
   }
 
   /**
@@ -1394,9 +1027,9 @@ export class WebSocketClient extends EventEmitter {
       }
 
       const diff = Date.now() - this.lastDateRecv.getTime();
-      
-      // Verifica se passou muito tempo sem receber dados (como no Baileys)
-      if (diff > KEEPALIVE_INTERVAL + 5000) {
+
+      // Verifica se passou muito tempo sem receber dados
+      if (diff > KEEPALIVE_INTERVAL * 2) {
         console.log('❌ Conexão perdida - muito tempo sem receber dados');
         this.cleanup();
         this.emit('connection.update', {
@@ -1407,9 +1040,8 @@ export class WebSocketClient extends EventEmitter {
           }
         });
       } else if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        // Envia keep-alive usando IQ message (como no Baileys)
         this.sendKeepAliveIQ().catch(err => {
-          console.error('❌ Erro ao enviar keep-alive IQ:', err);
+          console.log('⚠️ Keep-alive IQ falhou (normal durante handshake):', err.message);
         });
       } else {
         console.log('⚠️ Keep-alive chamado quando WebSocket não está aberto');
@@ -1422,21 +1054,26 @@ export class WebSocketClient extends EventEmitter {
    */
   private async sendKeepAliveIQ(): Promise<void> {
     try {
+      // Só envia keep-alive se a conexão estiver estabelecida e não há QR ativo
+      if (!this.isConnected || !this.noiseHandler) {
+        return;
+      }
+
       const keepAliveNode = {
         tag: 'iq',
         attrs: {
           id: this.generateMessageTag(),
           to: 's.whatsapp.net',
           type: 'get',
-          xmlns: 'w:p'
+          xmlns: 'urn:xmpp:ping'
         },
         content: [{ tag: 'ping', attrs: {} }]
       };
-      
+
       console.log('🏓 Enviando keep-alive IQ...');
       await this.sendNode(keepAliveNode);
     } catch (error) {
-      console.error('❌ Erro ao enviar keep-alive IQ:', error);
+      // Não trata como erro crítico durante handshake
       throw error;
     }
   }
@@ -1470,7 +1107,7 @@ export class WebSocketClient extends EventEmitter {
       },
       content: [{ tag, attrs: {} }]
     };
-    
+
     console.log(`📤 Enviando passive IQ: ${tag}`);
     await this.sendNode(node);
   }
@@ -1488,9 +1125,9 @@ export class WebSocketClient extends EventEmitter {
   private scheduleReconnect(): void {
     this.reconnectAttempts++;
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
-    
+
     console.log(`🔄 Tentativa de reconexão ${this.reconnectAttempts}/${this.maxReconnectAttempts} em ${delay}ms`);
-    
+
     setTimeout(() => {
       this.connect().catch(error => {
         console.error('❌ Falha na reconexão:', error.message);
@@ -1519,7 +1156,7 @@ export class WebSocketClient extends EventEmitter {
       1014: 'Bad Gateway',
       1015: 'TLS Handshake'
     };
-    
+
     return descriptions[code] || 'Unknown';
   }
 

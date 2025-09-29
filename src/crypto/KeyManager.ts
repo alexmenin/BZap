@@ -2,7 +2,7 @@
 
 import { randomBytes, createHash, createHmac } from 'crypto';
 import * as sodium from 'libsodium-wrappers';
-import { CRYPTO_CONFIG, AUTH_CONFIG } from '../constants/Constants';
+import { AUTH_CONFIG } from '../constants/Constants';
 
 // Usar API de curva diretamente do libsignal
 import * as curve from 'libsignal/src/curve';

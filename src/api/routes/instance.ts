@@ -9,27 +9,21 @@ const router = Router();
 const instanceManager = InstanceManager.getInstance();
 
 /**
- * Interface para criação de instância
+ * Interface para criação de instância (simplificada)
  */
 interface CreateInstanceRequest {
   name: string;
-  webhookUrl?: string;
-  settings?: {
-    rejectCall?: boolean;
-    msgRetryCounterCache?: boolean;
-    userDevicesCache?: boolean;
-  };
+  // Removido webhookUrl e settings complexas - foco apenas em handshake/QR
 }
 
 /**
- * Interface para resposta de instância
+ * Interface para resposta de instância (simplificada)
  */
 interface InstanceResponse {
   id: string;
   name: string;
   status: 'disconnected' | 'connecting' | 'connected' | 'qr_code';
   qrCode?: string;
-  webhookUrl?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -40,7 +34,7 @@ interface InstanceResponse {
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { name, webhookUrl, settings }: CreateInstanceRequest = req.body;
+    const { name }: CreateInstanceRequest = req.body;
 
     if (!name || typeof name !== 'string') {
       return res.status(400).json({
@@ -54,24 +48,16 @@ router.post('/', async (req: Request, res: Response) => {
 
     Logger.info(`🚀 Criando nova instância: ${name} (ID: ${instanceId})`);
 
-    // Cria a instância
+    // Cria a instância (simplificada - sem webhooks e settings complexas)
     const instance = await instanceManager.createInstance({
       id: instanceId,
-      name,
-      webhookUrl,
-      settings: {
-        rejectCall: settings?.rejectCall ?? false,
-        msgRetryCounterCache: settings?.msgRetryCounterCache ?? true,
-        userDevicesCache: settings?.userDevicesCache ?? true,
-        ...settings
-      }
+      name
     });
 
     const response: InstanceResponse = {
       id: instance.id,
       name: instance.name,
       status: instance.status,
-      webhookUrl: instance.webhookUrl,
       createdAt: instance.createdAt,
       updatedAt: instance.updatedAt
     };
@@ -149,7 +135,6 @@ router.get('/:id', async (req: Request, res: Response) => {
       name: instance.name,
       status: instance.status,
       qrCode: instance.qrCode,
-      webhookUrl: instance.webhookUrl,
       createdAt: instance.createdAt,
       updatedAt: instance.updatedAt
     };
@@ -297,6 +282,116 @@ router.post('/:id/connect', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/instance/:id/reset
+ * Reinicia a conexão de uma instância WhatsApp e gera novos QR codes
+ */
+router.post('/:id/reset', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    
+    console.log('🔄 [ROUTE] POST /reset chamado para instância:', id);
+    Logger.info(`🔄 Reiniciando instância: ${id}`);
+    
+    // Obtém a instância
+    console.log('🔄 [ROUTE] Obtendo dados da instância...');
+    const instanceData = await instanceManager.getInstance(id);
+    if (!instanceData) {
+      console.log('🔄 [ROUTE] Instância não encontrada:', id);
+      return res.status(404).json({
+        error: 'Instância não encontrada',
+        code: 'INSTANCE_NOT_FOUND'
+      });
+    }
+
+    console.log('🔄 [ROUTE] Status atual da instância:', instanceData.status);
+
+    // Primeiro desconecta se estiver conectada
+    if (instanceData.status === 'connected' || instanceData.status === 'connecting') {
+      console.log('🔄 [ROUTE] Desconectando instância antes do reset...');
+      await instanceManager.disconnectInstance(id);
+    }
+
+    console.log('🔄 [ROUTE] Iniciando nova conexão após reset...');
+    // Inicia nova conexão
+    const connectPromise = instanceManager.connectInstance(id);
+    
+    // Aguarda o QR code ser gerado via evento connection.update
+    const qrCodePromise = new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout aguardando QR code após reset'));
+      }, 30000); // 30 segundos de timeout
+
+      // Escuta o evento de QR code da instância
+      const onQrCode = (qrCode: string) => {
+        clearTimeout(timeout);
+        instanceManager.off('instance:qr_code', onQrCode);
+        resolve(qrCode);
+      };
+
+      instanceManager.on('instance:qr_code', (instanceId: string, qrCode: string) => {
+        if (instanceId === id) {
+          onQrCode(qrCode);
+        }
+      });
+    });
+
+    // Executa conexão e aguarda QR code em paralelo
+    const [connectResult] = await Promise.allSettled([connectPromise, qrCodePromise]);
+    
+    if (connectResult.status === 'rejected') {
+      Logger.error(`❌ Erro no reset da instância ${id}:`, connectResult.reason);
+      return res.status(500).json({
+        error: 'Erro ao reiniciar conexão',
+        code: 'RESET_ERROR'
+      });
+    }
+
+    const result = connectResult.value;
+    if (!result.success) {
+      return res.status(400).json({
+        error: result.error,
+        code: result.code
+      });
+    }
+
+    // Aguarda o QR code ser gerado
+    try {
+      const qrCode = await qrCodePromise;
+      
+      return res.json({
+        success: true,
+        message: 'Conexão reiniciada e novos QR codes gerados com sucesso',
+        data: {
+          id,
+          status: 'qr_code',
+          qrCode: qrCode
+        }
+      });
+    } catch (qrError) {
+      Logger.warn(`⚠️ Timeout aguardando QR code após reset para instância ${id}`);
+      
+      // Retorna sucesso mesmo sem QR code, pois a conexão foi reiniciada
+      return res.json({
+        success: true,
+        message: 'Conexão reiniciada com sucesso',
+        data: {
+          id,
+          status: result.status,
+          qrCode: result.qrCode
+        }
+      });
+    }
+
+  } catch (error) {
+    Logger.error(`❌ Erro ao reiniciar instância ${req.params.id}:`, error);
+    return res.status(500).json({
+      error: 'Erro interno do servidor',
+      code: 'INTERNAL_ERROR'
+    });
+  }
+});
+
+/**
  * POST /api/instance/:id/disconnect
  * Desconecta uma instância WhatsApp
  */
@@ -401,6 +496,144 @@ router.delete('/:id', async (req: Request, res: Response) => {
       error: 'Erro interno do servidor',
       code: 'INTERNAL_ERROR'
     });
+  }
+});
+
+/**
+ * GET /api/instance/:id/events
+ * Server-Sent Events para atualizações em tempo real da instância
+ */
+router.get('/:id/events', async (req: Request, res: Response): Promise<void> => {
+  const { id } = req.params;
+
+  try {
+    // Verifica se a instância existe
+    const instance = await instanceManager.getInstance(id);
+    if (!instance) {
+      res.status(404).json({
+        error: 'Instância não encontrada',
+        code: 'INSTANCE_NOT_FOUND'
+      });
+      return;
+    }
+
+    // Configura headers para Server-Sent Events
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Cache-Control'
+    });
+
+    // Envia evento inicial com estado atual
+    const sendEvent = (eventType: string, data: any) => {
+      res.write(`event: ${eventType}\n`);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // Envia estado inicial
+    sendEvent('instance_status', {
+      instanceId: id,
+      status: instance.status,
+      qrCode: instance.qrCode,
+      qrCodeExpiresAt: instance.qrCodeExpiresAt,
+      timestamp: new Date().toISOString()
+    });
+
+    Logger.info(`📡 Cliente SSE conectado para instância: ${id}`);
+
+    // Listeners para eventos da instância
+    const onQRCode = (instanceId: string, qrCode: any) => {
+      if (instanceId === id) {
+        Logger.info(`📱 Enviando QR code via SSE para instância: ${id}`);
+        sendEvent('qr_code', {
+          instanceId,
+          qrCode,
+          timestamp: new Date().toISOString()
+        });
+      }
+    };
+
+    const onQRUpdated = (instanceId: string, qrCode: any) => {
+      if (instanceId === id) {
+        Logger.info(`🔄 Enviando QR code atualizado via SSE para instância: ${id}`);
+        sendEvent('qr_code', {
+          instanceId,
+          qrCode,
+          timestamp: new Date().toISOString()
+        });
+      }
+    };
+
+    const onStatusChanged = (instanceId: string, status: string) => {
+      if (instanceId === id) {
+        Logger.info(`🔄 Enviando mudança de status via SSE para instância: ${id} - ${status}`);
+        sendEvent('status_changed', {
+          instanceId,
+          status,
+          timestamp: new Date().toISOString()
+        });
+      }
+    };
+
+    const onConnected = (instanceId: string) => {
+      if (instanceId === id) {
+        Logger.info(`✅ Enviando evento de conexão via SSE para instância: ${id}`);
+        sendEvent('connected', {
+          instanceId,
+          timestamp: new Date().toISOString()
+        });
+      }
+    };
+
+    const onDisconnected = (instanceId: string, reason: string) => {
+      if (instanceId === id) {
+        Logger.info(`❌ Enviando evento de desconexão via SSE para instância: ${id}`);
+        sendEvent('disconnected', {
+          instanceId,
+          reason,
+          timestamp: new Date().toISOString()
+        });
+      }
+    };
+
+    // Registra listeners
+    instanceManager.on('instance:qr_code', onQRCode);
+    instanceManager.on('instance:qr_updated', onQRUpdated);
+    instanceManager.on('instance:status_changed', onStatusChanged);
+    instanceManager.on('instance:connected', onConnected);
+    instanceManager.on('instance:disconnected', onDisconnected);
+
+    // Heartbeat para manter conexão viva
+    const heartbeat = setInterval(() => {
+      sendEvent('heartbeat', {
+        timestamp: new Date().toISOString()
+      });
+    }, 30000); // 30 segundos
+
+    // Cleanup quando cliente desconecta
+    req.on('close', () => {
+      Logger.info(`📡 Cliente SSE desconectado para instância: ${id}`);
+      
+      // Remove listeners
+      instanceManager.off('instance:qr_code', onQRCode);
+      instanceManager.off('instance:qr_updated', onQRUpdated);
+      instanceManager.off('instance:status_changed', onStatusChanged);
+      instanceManager.off('instance:connected', onConnected);
+      instanceManager.off('instance:disconnected', onDisconnected);
+      
+      // Limpa heartbeat
+      clearInterval(heartbeat);
+    });
+
+  } catch (error) {
+    Logger.error(`❌ Erro ao configurar SSE para instância ${id}:`, error);
+    res.status(500).json({
+      error: 'Erro interno do servidor',
+      code: 'INTERNAL_ERROR'
+    });
+    return;
   }
 });
 

@@ -522,7 +522,7 @@ export class AuthStateManager {
             const data: { [id: string]: any } = {};
             await Promise.all(
               ids.map(async id => {
-                let value = await readData(`${type}-${id}.json`);
+                const value = await readData(`${type}-${id}.json`);
                 // Tratamento especial para app-state-sync-key se necessário
                 if (type === 'app-state-sync-key' && value) {
                   // Aqui poderia ter tratamento específico do proto se necessário

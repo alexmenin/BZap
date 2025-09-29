@@ -1,16 +1,9 @@
 // generics.ts - Utilitários genéricos baseados no Baileys-master
 
 import { Boom } from '@hapi/boom';
-import { createHash, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 import { platform, release } from 'os';
 import { waproto } from '@wppconnect/wa-proto';
-import type { BinaryNode } from '../protocol/WABinary';
-// Removendo imports não disponíveis - serão implementados conforme necessário
-// import { getAllBinaryNodeChildren, jidDecode } from '../protocol/WABinary';
-import { sha256 } from '../crypto/Curve25519';
-
-// Versão do Baileys compatível
-const baileysVersion = [2, 3000, 1023223821];
 
 // Mapeamento de plataformas
 const PLATFORM_MAP = {
@@ -65,11 +58,7 @@ export const BufferJSON = {
   }
 };
 
-/**
- * Obtém o autor de uma chave de mensagem
- */
-export const getKeyAuthor = (key: waproto.IMessageKey | undefined | null, meId = 'me') =>
-  (key?.fromMe ? meId : key?.participant || key?.remoteJid) || '';
+
 
 /**
  * Adiciona padding aleatório (máximo 16 bytes)
@@ -137,44 +126,12 @@ export const unixTimestampSeconds = (date: Date = new Date()) => Math.floor(date
  */
 export const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-/**
- * Gera ID de mensagem V2
- */
-export const generateMessageIDV2 = (userId?: string): string => {
-  const timestamp = unixTimestampSeconds();
-  const randomPart = randomBytes(8).toString('hex').toUpperCase();
-  return `3EB0${timestamp.toString(16).toUpperCase()}${randomPart}`;
-};
+
 
 /**
  * Gera ID de mensagem
  */
 export const generateMessageID = () => '3EB0' + randomBytes(18).toString('hex').toUpperCase();
-
-/**
- * Mapeamento de status de mensagem
- */
-const STATUS_MAP: { [_: string]: waproto.WebMessageInfo.Status } = {
-  sender: waproto.WebMessageInfo.Status.SERVER_ACK,
-  played: waproto.WebMessageInfo.Status.PLAYED,
-  read: waproto.WebMessageInfo.Status.READ,
-  'read-self': waproto.WebMessageInfo.Status.READ
-};
-
-/**
- * Obtém status do tipo de recibo
- */
-export const getStatusFromReceiptType = (type: string | undefined) => {
-  const status = STATUS_MAP[type || ''];
-  return status || waproto.WebMessageInfo.Status.DELIVERY_ACK;
-};
-
-/**
- * Verifica se é plataforma business
- */
-export const isWABusinessPlatform = (platform: string) => {
-  return platform === 'smbi' || platform === 'smba';
-};
 
 /**
  * Remove propriedades undefined de um objeto
@@ -186,11 +143,4 @@ export function trimUndefined(obj: { [_: string]: any }) {
     }
   }
   return obj;
-}
-
-/**
- * Codifica mensagem de newsletter usando protobuf
- */
-export function encodeNewsletterMessage(message: waproto.IMessage): Uint8Array {
-  return waproto.Message.encode(message).finish();
 }

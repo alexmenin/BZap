@@ -3,9 +3,8 @@
 import { Logger, LogLevel } from './utils/Logger';
 import { InstanceManager } from './api/services/InstanceManager';
 import { WhatsAppInstance } from './api/services/WhatsAppInstance';
-import { SessionManager } from './session/SessionManager';
+import { SessionManager } from './api/services/SessionManager';
 import { EventHandlers } from './events/EventHandlers';
-import { useMultiFileAuthState, validateAuthState, clearCorruptedAuthState } from './auth/AuthState';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { EventEmitter } from 'events';

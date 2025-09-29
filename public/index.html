@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BZap - Gerenciador de Instâncias WhatsApp</title>
+    <title>BZap - Handshake & QR Code Manager</title>
     <link rel="stylesheet" href="fontawesome.css">
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,13 +11,13 @@
     <div class="container">
         <header class="header">
             <div class="header-content">
-                <h1><i class="fab fa-whatsapp"></i> BZap Manager</h1>
-                <p>Gerenciador de Instâncias WhatsApp</p>
+                <h1><i class="fab fa-whatsapp"></i> BZap QR Manager</h1>
+                <p>Gerador de QR Code para Handshake WhatsApp</p>
             </div>
         </header>
 
         <main class="main-content">
-            <!-- Seção de Criação de Instância -->
+            <!-- Seção de Criação de Instância (Simplificada) -->
             <section class="create-instance-section">
                 <div class="card">
                     <div class="card-header">
@@ -28,10 +28,6 @@
                             <div class="form-group">
                                 <label for="instanceName">Nome da Instância</label>
                                 <input type="text" id="instanceName" name="name" placeholder="Ex: Minha Empresa" required>
-                            </div>
-                            <div class="form-group">
-                                <label for="webhookUrl">Webhook URL (Opcional)</label>
-                                <input type="url" id="webhookUrl" name="webhookUrl" placeholder="https://exemplo.com/webhook">
                             </div>
                             <button type="submit" class="btn btn-primary">
                                 <i class="fas fa-plus"></i> Criar Instância
@@ -45,7 +41,7 @@
             <section class="instances-section">
                 <div class="card">
                     <div class="card-header">
-                        <h2><i class="fas fa-list"></i> Instâncias Ativas</h2>
+                        <h2><i class="fas fa-list"></i> Instâncias para QR Code</h2>
                         <button id="refreshInstances" class="btn btn-secondary">
                             <i class="fas fa-sync-alt"></i> Atualizar
                         </button>
