@@ -214,7 +214,7 @@ export class WhatsAppInstance extends EventEmitter {
       
       // Verifica se tem credenciais salvas
       console.log('🔍 [WHATSAPP_INSTANCE] Verificando se tem sessão salva...');
-      if (this.credentialsManager.hasSession(this.config.id)) {
+      if (await this.credentialsManager.hasSession(this.config.id)) {
         console.log('🔍 [WHATSAPP_INSTANCE] Sessão encontrada - usando credenciais salvas');
         Logger.info(`🔑 Usando credenciais salvas para instância: ${this.config.id}`);
         this.sessionData = await this.credentialsManager.loadSession(this.config.id);
@@ -375,17 +375,18 @@ export class WhatsAppInstance extends EventEmitter {
       const authResult = await this.authenticateWithBaileysCredentials();
       
       if (authResult.success) {
-        this.updateStatus('connected');
+        // ✅ CORREÇÃO: Não define status como 'connected' aqui
+        // O status será atualizado pelos eventos WebSocket quando a conexão for realmente estabelecida
         this.lastSeen = new Date();
         
         // Inicia heartbeat
         this.startHeartbeat();
         
-        Logger.info(`✅ Instância conectada com credenciais salvas: ${this.config.id}`);
+        Logger.info(`✅ Credenciais válidas para instância: ${this.config.id}`);
         
         return {
           success: true,
-          status: 'connected'
+          status: 'connecting' // Status permanece como connecting até confirmação WebSocket
         };
       } else {
         // Credenciais inválidas, inicia nova autenticação
@@ -676,6 +677,7 @@ export class WhatsAppInstance extends EventEmitter {
     try {
       // Implementa autenticação com credenciais salvas
       if (!this.authState || !this.authState.creds) {
+        Logger.warn(`⚠️ Estado de autenticação não encontrado para instância: ${this.config.id}`);
         return {
           success: false,
           error: 'Estado de autenticação não encontrado',
@@ -683,8 +685,14 @@ export class WhatsAppInstance extends EventEmitter {
         };
       }
       
-      // Verifica se as credenciais têm informações de usuário (indicando autenticação prévia)
-      if (!this.authState.creds.me || !this.authState.creds.me.id) {
+      const creds = this.authState.creds;
+      
+      // ✅ CORREÇÃO: Validação mais rigorosa das credenciais
+      // Verifica se as credenciais são realmente válidas (não apenas se existem)
+      
+      // 1. Verifica se está registrado e tem informações de usuário
+      if (!creds.registered || !creds.me || !creds.me.id) {
+        Logger.warn(`⚠️ Credenciais incompletas para instância ${this.config.id}: registered=${creds.registered}, me=${!!creds.me}`);
         return {
           success: false,
           error: 'Credenciais incompletas - usuário não autenticado',
@@ -692,8 +700,9 @@ export class WhatsAppInstance extends EventEmitter {
         };
       }
       
-      // Valida chaves essenciais
-      if (!this.authState.creds.noiseKey || !this.authState.creds.signedIdentityKey) {
+      // 2. Valida chaves essenciais
+      if (!creds.noiseKey || !creds.signedIdentityKey || !creds.signedPreKey) {
+        Logger.warn(`⚠️ Chaves de autenticação inválidas para instância ${this.config.id}`);
         return {
           success: false,
           error: 'Chaves de autenticação inválidas',
@@ -701,27 +710,49 @@ export class WhatsAppInstance extends EventEmitter {
         };
       }
       
-      // Tenta restaurar a sessão usando as credenciais
-      try {
-        // Restaura sessão usando credenciais (implementação simplificada)
-        Logger.info(`🔄 Restaurando sessão para instância: ${this.config.id}`);
-        
-        // Atualiza informações do usuário
-        this.phoneNumber = this.authState.creds.me.id;
-        this.profileName = this.authState.creds.me.name;
-        
-        Logger.info(`✅ Sessão restaurada para usuário: ${this.phoneNumber}`);
-        
-        return {
-          success: true,
-          status: 'connected'
-        };
-      } catch (restoreError) {
-        Logger.error(`❌ Erro ao restaurar sessão:`, restoreError);
+      // 3. Verifica se tem platform (obrigatório após pair-success)
+      if (!creds.platform) {
+        Logger.warn(`⚠️ Platform não definido para instância ${this.config.id} - credenciais incompletas`);
         return {
           success: false,
-          error: `Falha ao restaurar sessão: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
-          code: 'SESSION_RESTORE_ERROR'
+          error: 'Platform não definido - credenciais incompletas',
+          code: 'NO_PLATFORM'
+        };
+      }
+      
+      // 4. Verifica se tem signalIdentities (obrigatório após pair-success)
+      if (!creds.signalIdentities || creds.signalIdentities.length === 0) {
+        Logger.warn(`⚠️ SignalIdentities não definido para instância ${this.config.id} - credenciais incompletas`);
+        return {
+          success: false,
+          error: 'SignalIdentities não definido - credenciais incompletas',
+          code: 'NO_SIGNAL_IDENTITIES'
+        };
+      }
+      
+      // ✅ CORREÇÃO: Não define status como 'connected' automaticamente
+      // O status será atualizado apenas quando a conexão WebSocket for estabelecida
+      // através dos eventos 'connection.update' ou 'open'
+      try {
+        Logger.info(`🔄 Validando credenciais completas para instância: ${this.config.id}`);
+        
+        // Atualiza informações do usuário
+        this.phoneNumber = creds.me.id;
+        this.profileName = creds.me.name;
+        
+        Logger.info(`✅ Credenciais válidas e completas para usuário: ${this.phoneNumber}`);
+        
+        // Retorna sucesso mas sem status 'connected' - será definido pelos eventos WebSocket
+        return {
+          success: true,
+          status: 'connecting' // Status permanece como connecting até confirmação WebSocket
+        };
+      } catch (restoreError) {
+        Logger.error(`❌ Erro ao validar credenciais:`, restoreError);
+        return {
+          success: false,
+          error: `Falha ao validar credenciais: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+          code: 'CREDENTIAL_VALIDATION_ERROR'
         };
       }
       

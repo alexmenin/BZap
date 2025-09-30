@@ -5,10 +5,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'path';
+import { createServer, Server as HttpServer } from 'http';
 import { config } from 'dotenv';
 import { Logger } from './utils/Logger';
 import { InstanceManager } from './api/services/InstanceManager';
 import { CacheManager } from './api/services/CacheManager';
+import { WebSocketServer } from './websocket/WebSocketServer';
 
 // Importa rotas
 import instanceRoutes from './api/routes/instance';
@@ -48,6 +50,8 @@ class WhatsAppAPIServer {
   private config: ServerConfig;
   private instanceManager: InstanceManager;
   private cacheManager: CacheManager;
+  private server?: HttpServer;
+  private webSocketServer?: WebSocketServer;
 
   constructor() {
     this.app = express();
@@ -207,6 +211,65 @@ class WhatsAppAPIServer {
   }
 
   /**
+   * Configura integração entre WebSocket Server e InstanceManager
+   */
+  private setupWebSocketIntegration(): void {
+    if (!this.webSocketServer) return;
+
+    // Escuta eventos do InstanceManager para repassar via WebSocket
+    this.instanceManager.on('instance:status_changed', (instanceId: string, status: string, data?: any) => {
+      this.webSocketServer!.emitInstanceStatusUpdate(instanceId, status, data);
+    });
+
+    this.instanceManager.on('instance:qr_code', (instanceId: string, qrCode: any) => {
+      this.webSocketServer!.emitQRCodeGenerated(instanceId, qrCode.qr || qrCode, qrCode.expiresAt);
+    });
+
+    this.instanceManager.on('instance:connected', (instanceId: string, phoneNumber?: string) => {
+      this.webSocketServer!.emitInstanceConnected(instanceId, phoneNumber);
+    });
+
+    this.instanceManager.on('instance:disconnected', (instanceId: string, reason?: string) => {
+      this.webSocketServer!.emitInstanceDisconnected(instanceId, reason);
+    });
+
+    // Escuta requests do WebSocket Server
+    this.webSocketServer.on('get_instance_status_request', async (instanceId: string, clientId: string) => {
+      try {
+        const instance = await this.instanceManager.getInstance(instanceId);
+        if (instance) {
+          this.webSocketServer!.emitToClient(clientId, 'instance_status_response', {
+            instanceId,
+            status: instance.status,
+            phoneNumber: instance.phoneNumber,
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        Logger.error(`Erro ao buscar status da instância ${instanceId}:`, error);
+      }
+    });
+
+    this.webSocketServer.on('get_qr_code_request', async (instanceId: string, clientId: string) => {
+      try {
+        const instance = await this.instanceManager.getInstance(instanceId);
+        if (instance && instance.qrCode) {
+          this.webSocketServer!.emitToClient(clientId, 'qr_code_response', {
+            instanceId,
+            qrCode: instance.qrCode,
+            expiresAt: instance.qrCodeExpiresAt?.toISOString(),
+            timestamp: new Date().toISOString()
+          });
+        }
+      } catch (error) {
+        Logger.error(`Erro ao buscar QR code da instância ${instanceId}:`, error);
+      }
+    });
+
+    Logger.info('🔗 Integração WebSocket configurada');
+  }
+
+  /**
    * Configura tratamento de erros
    */
   private setupErrorHandling(): void {
@@ -293,14 +356,20 @@ class WhatsAppAPIServer {
     }
   }
 
-  private server?: any;
-
   /**
    * Inicia o servidor
    */
   public start(): void {
-    this.server = this.app.listen(this.config.port, this.config.host, () => {
+    // Cria servidor HTTP
+    const httpServer = createServer(this.app);
+    
+    // Inicializa WebSocket Server
+    this.webSocketServer = new WebSocketServer(httpServer);
+    this.setupWebSocketIntegration();
+    
+    this.server = httpServer.listen(this.config.port, this.config.host, () => {
       Logger.info(`🚀 Servidor rodando em http://${this.config.host}:${this.config.port}`);
+      Logger.info(`🔌 WebSocket Server ativo na mesma porta`);
       Logger.info(`📚 Documentação disponível em http://${this.config.host}:${this.config.port}/api/docs`);
       Logger.info(`❤️ Health check em http://${this.config.host}:${this.config.port}/health`);
       
@@ -325,11 +394,22 @@ class WhatsAppAPIServer {
    * Para o servidor
    */
   public stop(): void {
+    if (this.webSocketServer) {
+      this.webSocketServer.close();
+    }
+    
     if (this.server) {
       this.server.close(() => {
         Logger.info('🛑 Servidor parado');
       });
     }
+  }
+
+  /**
+   * Obtém instância do WebSocket Server
+   */
+  public getWebSocketServer(): WebSocketServer | undefined {
+    return this.webSocketServer;
   }
 
   /**

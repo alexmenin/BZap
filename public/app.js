@@ -9,76 +9,185 @@ class WhatsAppManager {
         this.qrCountdownInterval = null;
         this.connectionMonitorInterval = null;
         this.eventSource = null;
+        this.socket = null; // WebSocket connection
         
         this.init();
     }
 
-    // Função para conectar ao SSE
-    connectToSSE(instanceId) {
+    // Função para conectar ao WebSocket
+    connectToWebSocket() {
         // Fecha conexão anterior se existir
-        if (this.eventSource) {
-            this.eventSource.close();
-            this.eventSource = null;
+        if (this.socket) {
+            this.socket.disconnect();
+            this.socket = null;
         }
 
-        if (!instanceId) return;
-
-        console.log(`🔌 Conectando ao SSE para instância: ${instanceId}`);
+        console.log('🔌 Conectando ao WebSocket...');
         
-        this.eventSource = new EventSource(`/api/instance/${instanceId}/events`);
+        // Conecta ao servidor WebSocket usando Socket.IO
+        this.socket = io();
 
-        this.eventSource.addEventListener('instance_status', (event) => {
-            const data = JSON.parse(event.data);
-            console.log('📊 Status inicial da instância:', data);
-            
+        // Event listeners do WebSocket
+        this.socket.on('connect', () => {
+            console.log('✅ Conectado ao WebSocket');
+        });
+
+        this.socket.on('disconnect', (reason) => {
+            console.log('❌ Desconectado do WebSocket:', reason);
+        });
+
+        this.socket.on('instance_status_update', (data) => {
+            console.log('📊 Status da instância atualizado via WebSocket:', data);
+            this.handleInstanceStatusUpdate(data);
+        });
+
+        this.socket.on('qr_code_generated', (data) => {
+            console.log('📱 Novo QR code recebido via WebSocket:', data);
+            this.handleQRCodeGenerated(data);
+        });
+
+        this.socket.on('instance_connected', (data) => {
+            console.log('✅ Instância conectada via WebSocket:', data);
+            this.handleInstanceConnected(data);
+        });
+
+        this.socket.on('instance_disconnected', (data) => {
+            console.log('❌ Instância desconectada via WebSocket:', data);
+            this.handleInstanceDisconnected(data);
+        });
+
+        this.socket.on('qr_code_response', (data) => {
+            console.log('📱 QR code response via WebSocket:', data);
             if (data.qrCode) {
                 this.updateQRCodeDisplay(data.qrCode);
             }
         });
 
-        this.eventSource.addEventListener('qr_code', (event) => {
-            const data = JSON.parse(event.data);
-            console.log('📱 Novo QR code recebido via SSE:', data);
-            
-            this.updateQRCodeDisplay(data.qrCode);
+        this.socket.on('instance_status_response', (data) => {
+            console.log('📊 Instance status response via WebSocket:', data);
+            if (data.status) {
+                this.updateInstanceStatus(data.status.status, data.instanceId);
+            }
         });
 
-        this.eventSource.addEventListener('status_changed', (event) => {
-            const data = JSON.parse(event.data);
-            console.log('🔄 Status da instância alterado:', data);
-            
-            this.updateInstanceStatus(data.status);
+        this.socket.on('error', (error) => {
+            console.error('❌ Erro no WebSocket:', error);
         });
+    }
 
-        this.eventSource.addEventListener('connected', (event) => {
-            const data = JSON.parse(event.data);
-            console.log('✅ Instância conectada:', data);
+    // Handler para atualização de status da instância
+    handleInstanceStatusUpdate(data) {
+        if (this.currentQrInstance && this.currentQrInstance.id === data.instanceId) {
+            const status = data.status;
             
-            this.handleSuccessfulConnection(instanceId);
-        });
-
-        this.eventSource.addEventListener('disconnected', (event) => {
-            const data = JSON.parse(event.data);
-            console.log('❌ Instância desconectada:', data);
+            // Se conectou com sucesso
+            if (status === 'connected') {
+                this.handleSuccessfulConnection(data.instanceId);
+                return;
+            }
             
-            this.updateInstanceStatus('disconnected');
-        });
-
-        this.eventSource.addEventListener('heartbeat', (event) => {
-            // Heartbeat silencioso para manter conexão
-        });
-
-        this.eventSource.onerror = (error) => {
-            console.error('❌ Erro no SSE:', error);
+            // Se QR code foi escaneado
+            if (status === 'qr_scanned') {
+                console.log('🎉 QR Code escaneado detectado via WebSocket!');
+                this.updateQrModalStatus('🎉 QR Code escaneado! Conectando...', 'connecting');
+            }
             
-            // Reconecta após 5 segundos em caso de erro
-            setTimeout(() => {
-                if (this.currentQrInstance && this.currentQrInstance.id) {
-                    console.log('🔄 Tentando reconectar ao SSE...');
-                    this.connectToSSE(this.currentQrInstance.id);
-                }
-            }, 5000);
-        };
+            // Se está conectando
+            if (status === 'connecting') {
+                console.log('🔄 Status connecting detectado via WebSocket');
+                this.updateQrModalStatus('🔄 Finalizando autenticação...', 'connecting');
+            }
+            
+            // Se desconectou inesperadamente
+            if (status === 'disconnected') {
+                this.updateQrModalStatus('Desconectado', 'disconnected');
+            }
+
+            // Se está gerando QR code
+            if (status === 'qr_code') {
+                this.updateQrModalStatus('📱 Gerando QR Code...', 'qr_code');
+            }
+        }
+        
+        // Atualiza status na lista de instâncias
+        this.updateInstanceStatus(data.status, data.instanceId);
+    }
+
+    // Handler para QR code gerado
+    handleQRCodeGenerated(data) {
+        if (this.currentQrInstance && this.currentQrInstance.id === data.instanceId) {
+            console.log('📱 Atualizando QR code via WebSocket');
+            // Usar 'qr' ou 'qrCode' dependendo do que está disponível
+            const qrCode = data.qr || data.qrCode;
+            if (qrCode) {
+                this.updateQRCodeDisplay(qrCode);
+            } else {
+                console.warn('⚠️ QR code não encontrado nos dados:', data);
+            }
+        }
+    }
+
+    // Handler para instância conectada
+    handleInstanceConnected(data) {
+        if (this.currentQrInstance && this.currentQrInstance.id === data.instanceId) {
+            this.handleSuccessfulConnection(data.instanceId);
+        }
+    }
+
+    // Handler para instância desconectada
+    handleInstanceDisconnected(data) {
+        if (this.currentQrInstance && this.currentQrInstance.id === data.instanceId) {
+            this.updateQrModalStatus('❌ Desconectado', 'disconnected');
+        }
+        this.updateInstanceStatus('disconnected', data.instanceId);
+    }
+
+    // Função para se inscrever em eventos de uma instância
+    subscribeToInstance(instanceId) {
+        if (this.socket && this.socket.connected) {
+            console.log(`📡 Inscrevendo-se em eventos da instância: ${instanceId}`);
+            this.socket.emit('subscribe_instance', { instanceId });
+        }
+    }
+
+    // Função para cancelar inscrição em eventos de uma instância
+    unsubscribeFromInstance(instanceId) {
+        if (this.socket && this.socket.connected) {
+            console.log(`📡 Cancelando inscrição em eventos da instância: ${instanceId}`);
+            this.socket.emit('unsubscribe_instance', { instanceId });
+        }
+    }
+
+    // Função para solicitar status da instância via WebSocket
+    requestInstanceStatus(instanceId) {
+        if (this.socket && this.socket.connected) {
+            console.log(`📊 Solicitando status da instância via WebSocket: ${instanceId}`);
+            this.socket.emit('get_instance_status', { instanceId });
+        }
+    }
+
+    // Função para solicitar QR code via WebSocket
+    requestQRCode(instanceId) {
+        if (this.socket && this.socket.connected) {
+            console.log(`📱 Solicitando QR code via WebSocket: ${instanceId}`);
+            this.socket.emit('get_qr_code', { instanceId });
+        }
+    }
+
+    // Função para conectar ao SSE (mantida para compatibilidade, mas não será mais usada)
+    connectToSSE(instanceId) {
+        // Esta função foi substituída pela conexão WebSocket
+        console.log('⚠️ SSE foi substituído por WebSocket');
+        return;
+    }
+
+    // Função para desconectar do WebSocket
+    disconnectFromWebSocket() {
+        if (this.socket) {
+            console.log('🔌 Desconectando do WebSocket');
+            this.socket.disconnect();
+            this.socket = null;
+        }
     }
 
     // Função para atualizar o display do QR code
@@ -128,19 +237,25 @@ class WhatsAppManager {
                     background: '#FFFFFF',
                     size: 300
                 }, canvas);
-                console.log('✅ QR Code gerado com sucesso via SSE');
+                console.log('✅ QR Code gerado com sucesso via WebSocket');
             } catch (error) {
                 // Fallback: tentar com configurações alternativas
                 console.warn('⚠️ Erro com ecLevel L, tentando com ecLevel M:', error.message);
-                QrCreator.render({
-                    text: qrCodeText,
-                    radius: 0,
-                    ecLevel: 'M',
-                    fill: '#000000',
-                    background: '#FFFFFF',
-                    size: 256
-                }, canvas);
-                console.log('✅ QR Code gerado com sucesso (ecLevel M) via SSE');
+                try {
+                    QrCreator.render({
+                        text: qrCodeText,
+                        radius: 0,
+                        ecLevel: 'M',
+                        fill: '#000000',
+                        background: '#FFFFFF',
+                        size: 256
+                    }, canvas);
+                    console.log('✅ QR Code gerado com sucesso (ecLevel M) via WebSocket');
+                } catch (fallbackError) {
+                    console.error('❌ Erro ao gerar QR code mesmo com fallback:', fallbackError);
+                    qrContainer.innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Erro ao gerar QR Code</p></div>';
+                    return;
+                }
             }
             
             qrContainer.appendChild(canvas);
@@ -151,21 +266,21 @@ class WhatsAppManager {
             infoContainer.style.textAlign = 'center';
             infoContainer.style.marginTop = '15px';
             
-            const sseText = document.createElement('p');
-            sseText.className = 'text-success';
-            sseText.innerHTML = '<i class="fas fa-sync-alt"></i> QR Code atualizado automaticamente';
-            infoContainer.appendChild(sseText);
+            const wsText = document.createElement('p');
+            wsText.className = 'text-success';
+            wsText.innerHTML = '<i class="fas fa-wifi"></i> QR Code atualizado via WebSocket';
+            infoContainer.appendChild(wsText);
             
             qrContainer.appendChild(infoContainer);
             
-            console.log('✅ QR code atualizado com sucesso via SSE');
+            console.log('✅ QR code atualizado com sucesso via WebSocket');
 
         } catch (error) {
             console.error('❌ Erro ao atualizar QR code:', error);
         }
     }
 
-    // Função para desconectar do SSE
+    // Função para desconectar do SSE (mantida para compatibilidade)
     disconnectFromSSE() {
         if (this.eventSource) {
             console.log('🔌 Desconectando do SSE');
@@ -179,6 +294,8 @@ class WhatsAppManager {
         this.loadInstances();
         this.setupModalEvents();
         this.setupToastEvents();
+        // Conecta ao WebSocket na inicialização
+        this.connectToWebSocket();
     }
 
     bindEvents() {
@@ -382,16 +499,24 @@ class WhatsAppManager {
         instanceNameEl.textContent = instanceName;
         
         // Limpar container
-        qrContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><br>Conectando e gerando QR Codes...</div>';
+        qrContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><br>Conectando via WebSocket...</div>';
         
         // Mostrar modal
         modal.classList.add('show');
         document.body.style.overflow = 'hidden';
 
         try {
+            // Inscrever-se em eventos da instância via WebSocket
+            this.subscribeToInstance(instanceId);
+            
+            // Solicitar QR code inicial via WebSocket
+            this.requestQRCode(instanceId);
+            
+            // Solicitar status inicial via WebSocket
+            this.requestInstanceStatus(instanceId);
+            
+            // Gerar QR code via API (fallback)
             await this.generateQrCode(instanceId);
-            this.connectToSSE(instanceId);
-            this.startConnectionMonitoring(instanceId);
         } catch (error) {
             qrContainer.innerHTML = `<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Erro ao conectar</p><p class="text-muted">${error.message}</p></div>`;
         }
@@ -406,16 +531,24 @@ class WhatsAppManager {
         instanceNameEl.textContent = instanceName;
         
         // Limpar container
-        qrContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><br>Reiniciando conexão e gerando novos QR Codes...</div>';
+        qrContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><br>Reiniciando via WebSocket...</div>';
         
         // Mostrar modal
         modal.classList.add('show');
         document.body.style.overflow = 'hidden';
 
         try {
+            // Inscrever-se em eventos da instância via WebSocket
+            this.subscribeToInstance(instanceId);
+            
+            // Resetar QR code via API
             await this.resetQrCode(instanceId);
-            this.connectToSSE(instanceId);
-            this.startConnectionMonitoring(instanceId);
+            
+            // Solicitar novo QR code via WebSocket
+            this.requestQRCode(instanceId);
+            
+            // Solicitar status via WebSocket
+            this.requestInstanceStatus(instanceId);
         } catch (error) {
             qrContainer.innerHTML = `<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Erro ao reiniciar conexão</p><p class="text-muted">${error.message}</p></div>`;
         }
@@ -652,13 +785,17 @@ class WhatsAppManager {
             clearInterval(this.qrRefreshInterval);
         }
 
-        // Iniciar monitoramento de status da conexão
-        this.startConnectionMonitoring(instanceId);
+        // Nota: Monitoramento agora é feito via WebSocket, não mais por polling
+        console.log('⚠️ startQrRefresh: Monitoramento agora é via WebSocket');
 
-        // Atualizar QR a cada 30 segundos
+        // Atualizar QR a cada 30 segundos (mantido como fallback)
         this.qrRefreshInterval = setInterval(async () => {
             if (this.currentQrInstance && this.currentQrInstance.id === instanceId) {
                 try {
+                    // Solicitar novo QR via WebSocket primeiro
+                    this.requestQRCode(instanceId);
+                    
+                    // Fallback via API
                     await this.generateQrCode(instanceId);
                 } catch (error) {
                     console.error('Erro ao atualizar QR Code:', error);
@@ -667,55 +804,20 @@ class WhatsAppManager {
         }, 30000);
     }
 
+    // Método mantido para compatibilidade, mas não é mais usado
     startConnectionMonitoring(instanceId) {
-        // Limpar monitoramento anterior
-        if (this.connectionMonitorInterval) {
-            clearInterval(this.connectionMonitorInterval);
-        }
-
-        // Verificar status da conexão a cada 2 segundos para resposta mais rápida
-        this.connectionMonitorInterval = setInterval(async () => {
-            if (this.currentQrInstance && this.currentQrInstance.id === instanceId) {
-                try {
-                    const response = await fetch(`/api/instance/${instanceId}`);
-                    const result = await response.json();
-                    
-                    if (result.success && result.data) {
-                        const status = result.data.status;
-                        
-                        // Se conectou com sucesso
-                        if (status === 'connected') {
-                            this.handleSuccessfulConnection(instanceId);
-                            return;
-                        }
-                        
-                        // Se QR code foi escaneado
-                        if (status === 'qr_scanned') {
-                            console.log('🎉 QR Code escaneado detectado no frontend!');
-                            this.updateQrModalStatus('🎉 QR Code escaneado! Conectando...', 'connecting');
-                        }
-                        
-                        // Se está conectando
-                        if (status === 'connecting') {
-                            console.log('🔄 Status connecting detectado no frontend');
-                            this.updateQrModalStatus('🔄 Finalizando autenticação...', 'connecting');
-                        }
-                        
-                        // Se desconectou inesperadamente
-                        if (status === 'disconnected' && this.currentQrInstance.status !== 'disconnected') {
-                            this.updateQrModalStatus('Desconectado', 'disconnected');
-                        }
-                    }
-                } catch (error) {
-                    console.error('Erro ao verificar status da conexão:', error);
-                    this.updateQrModalStatus('Erro ao verificar conexão', 'error');
-                }
-            }
-        }, 2000);
+        console.log('⚠️ startConnectionMonitoring: Substituído por WebSocket');
+        // Método obsoleto - monitoramento agora é via WebSocket
+        return;
     }
 
     handleSuccessfulConnection(instanceId) {
-        // Para todos os intervalos
+        // Cancelar inscrição em eventos da instância via WebSocket
+        if (instanceId) {
+            this.unsubscribeFromInstance(instanceId);
+        }
+        
+        // Para todos os intervalos (mantido para compatibilidade)
         if (this.qrRefreshInterval) {
             clearInterval(this.qrRefreshInterval);
             this.qrRefreshInterval = null;
@@ -816,13 +918,18 @@ class WhatsAppManager {
         modal.classList.remove('show');
         document.body.style.overflow = '';
         
-        // Limpar intervalo de refresh
+        // Cancelar inscrição em eventos da instância via WebSocket
+        if (this.currentQrInstance) {
+            this.unsubscribeFromInstance(this.currentQrInstance.id);
+        }
+        
+        // Limpar intervalo de refresh (mantido para compatibilidade)
         if (this.qrRefreshInterval) {
             clearInterval(this.qrRefreshInterval);
             this.qrRefreshInterval = null;
         }
         
-        // Limpar monitoramento de conexão
+        // Limpar monitoramento de conexão (mantido para compatibilidade)
         if (this.connectionMonitorInterval) {
             clearInterval(this.connectionMonitorInterval);
             this.connectionMonitorInterval = null;
@@ -834,7 +941,7 @@ class WhatsAppManager {
             this.qrCountdownInterval = null;
         }
         
-        // Desconectar do SSE
+        // Desconectar do SSE (mantido para compatibilidade)
         this.disconnectFromSSE();
         
         this.currentQrInstance = null;
@@ -851,6 +958,10 @@ class WhatsAppManager {
             regenerateBtn.disabled = true;
             regenerateBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Gerando...';
             
+            // Solicitar novo QR code via WebSocket
+            this.requestQRCode(this.currentQrInstance.id);
+            
+            // Fallback: gerar via API
             await this.generateQrCode(this.currentQrInstance.id);
             this.showToast('QR Code regenerado com sucesso!', 'success');
         } catch (error) {

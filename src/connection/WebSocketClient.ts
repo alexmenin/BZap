@@ -115,6 +115,7 @@ export class WebSocketClient extends EventEmitter {
   private passiveIqSent = false; // ✅ Flag para evitar passive IQ duplicado
   private prekeySyncInFlight = false; // ✅ Flag para evitar upload duplicado de pre-keys
   private _successHandled = false; // ✅ Flag para evitar múltiplos processamentos do evento success
+  private _pairSuccessHandled = false; // ✅ Flag para controlar se pair-success foi processado
 
   // ✅ CORREÇÃO 2: Upload de pre-keys com lock para evitar concorrência/duplicidade
   private async uploadPreKeysToServerIfRequired(): Promise<void> {
@@ -910,8 +911,16 @@ export class WebSocketClient extends EventEmitter {
       return;
     }
 
+    // ✅ NOVA CORREÇÃO: Só processar CB:success após pair-success real
+    // Verifica se já houve um pair-success válido antes de processar o success
+    if (!this._pairSuccessHandled) {
+      console.log('⚠️ CB:success recebido antes do pair-success - ignorando');
+      console.log('🔍 Aguardando pair-success real antes de processar connection:open');
+      return;
+    }
+
     this._successHandled = true;
-    console.log('✅ Conexão estabelecida com sucesso:', node);
+    console.log('✅ Conexão estabelecida com sucesso após pair-success válido:', node);
 
     try {
       // Upload de pre-keys e passive IQ serão feitos no evento CB:success
@@ -1025,6 +1034,9 @@ export class WebSocketClient extends EventEmitter {
   private async handlePairSuccess(stanza: any): Promise<void> {
     try {
       console.log('🎉 Pair-success recebido - processando seguindo padrão Baileys');
+
+      // ✅ NOVA CORREÇÃO: Marca que pair-success foi processado
+      this._pairSuccessHandled = true;
 
       // Para o timer de QR code imediatamente (como no Baileys oficial)
       this.stopQRGeneration();
@@ -1225,6 +1237,7 @@ export class WebSocketClient extends EventEmitter {
     this.connectionClosed = false;
     this.lastCloseReason = undefined;
     this._successHandled = false; // ✅ Reset flag de success para nova sessão
+    this._pairSuccessHandled = false; // ✅ Reset flag de pair-success para nova sessão
 
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval);

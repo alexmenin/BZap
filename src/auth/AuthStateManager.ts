@@ -1,13 +1,11 @@
-// AuthStateManager.ts - Gerenciador de estado de autenticação
+// AuthStateManager.ts - Gerenciador de estado de autenticação com Prisma
 
 import { randomBytes } from 'crypto';
 import { Curve } from '../crypto/Curve25519';
 import { Logger } from '../utils/Logger';
-import * as fs from 'fs';
-import * as path from 'path';
 import { Mutex } from 'async-mutex';
-import { mkdir, readFile, stat, unlink, writeFile } from 'fs/promises';
 import { BufferJSON } from '../utils/BufferJSON';
+import { prisma } from '../database/PrismaClient';
 
 /**
  * Interface para credenciais de autenticação (compatível com Baileys)
@@ -124,28 +122,17 @@ export interface AuthenticationState {
 }
 
 /**
- * Gerenciador de estado de autenticação
+ * Gerenciador de estado de autenticação com Prisma
  */
 export class AuthStateManager {
-  private static readonly SESSIONS_DIR = path.join(process.cwd(), 'sessions');
-  private static readonly CREDS_FILE = 'creds.json';
-  private static readonly KEYS_FILE = 'keys.json';
-  
   private instanceId: string;
-  private sessionPath: string;
-  private credsPath: string;
-  private keysPath: string;
   
   // Cache em memória para as chaves
   private keysCache: Map<string, any> = new Map();
+  private keysCacheLoaded: boolean = false;
   
   constructor(instanceId: string) {
     this.instanceId = instanceId;
-    this.sessionPath = path.join(AuthStateManager.SESSIONS_DIR, instanceId);
-    this.credsPath = path.join(this.sessionPath, AuthStateManager.CREDS_FILE);
-    this.keysPath = path.join(this.sessionPath, AuthStateManager.KEYS_FILE);
-    
-    this.ensureSessionDirectory();
   }
   
   /**
@@ -162,9 +149,8 @@ export class AuthStateManager {
       keys
     };
     
-    // Salva o estado inicial
+    // Salva o estado inicial no banco
     await this.saveCreds(creds);
-    await this.saveKeys({});
     
     Logger.info(`✅ Estado de autenticação inicializado para: ${this.instanceId}`);
     return authState;
@@ -196,13 +182,89 @@ export class AuthStateManager {
   }
   
   /**
-   * Salva as credenciais
+   * Salva as credenciais no banco
    */
   public async saveCreds(creds: AuthenticationCreds): Promise<void> {
     try {
-      this.ensureSessionDirectory();
       const serializedCreds = this.serializeCreds(creds);
-      await fs.promises.writeFile(this.credsPath, JSON.stringify(serializedCreds, null, 2));
+      
+      await prisma.instance.upsert({
+        where: { instanceId: this.instanceId },
+        update: {
+          // Campos de credenciais individuais
+          noiseKeyPrivate: Buffer.from(creds.noiseKey.private),
+          noiseKeyPublic: Buffer.from(creds.noiseKey.public),
+          pairingEphemeralKeyPrivate: Buffer.from(creds.pairingEphemeralKeyPair.private),
+          pairingEphemeralKeyPublic: Buffer.from(creds.pairingEphemeralKeyPair.public),
+          signedIdentityKeyPrivate: Buffer.from(creds.signedIdentityKey.private),
+          signedIdentityKeyPublic: Buffer.from(creds.signedIdentityKey.public),
+          signedPreKeyId: creds.signedPreKey.keyId,
+          signedPreKeyPrivate: Buffer.from(creds.signedPreKey.keyPair.private),
+          signedPreKeyPublic: Buffer.from(creds.signedPreKey.keyPair.public),
+          signedPreKeySignature: Buffer.from(creds.signedPreKey.signature),
+          registrationId: creds.registrationId,
+          advSecretKey: creds.advSecretKey,
+          nextPreKeyId: creds.nextPreKeyId,
+          firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+          serverHasPreKeys: creds.serverHasPreKeys,
+          processedHistoryMessages: creds.processedHistoryMessages,
+          accountSyncCounter: creds.accountSyncCounter,
+          accountSettings: creds.accountSettings,
+          registered: creds.registered,
+          pairingCode: creds.pairingCode,
+          lastPropHash: creds.lastPropHash,
+          routingInfo: creds.routingInfo ? Buffer.from(creds.routingInfo) : null,
+          userId: creds.me?.id || null,
+          userName: creds.me?.name || null,
+          userLid: creds.me?.lid || null,
+          signalIdentities: creds.signalIdentities as any,
+          myAppStateKeyId: creds.myAppStateKeyId,
+          lastAccountSyncTimestamp: creds.lastAccountSyncTimestamp,
+          platform: creds.platform,
+          status: 'disconnected', // Status sempre inicia como disconnected, será atualizado quando conectar
+          updatedAt: new Date()
+        },
+        create: {
+          instanceId: this.instanceId,
+          // Campos de credenciais individuais
+          noiseKeyPrivate: Buffer.from(creds.noiseKey.private),
+          noiseKeyPublic: Buffer.from(creds.noiseKey.public),
+          pairingEphemeralKeyPrivate: Buffer.from(creds.pairingEphemeralKeyPair.private),
+          pairingEphemeralKeyPublic: Buffer.from(creds.pairingEphemeralKeyPair.public),
+          signedIdentityKeyPrivate: Buffer.from(creds.signedIdentityKey.private),
+          signedIdentityKeyPublic: Buffer.from(creds.signedIdentityKey.public),
+          signedPreKeyId: creds.signedPreKey.keyId,
+          signedPreKeyPrivate: Buffer.from(creds.signedPreKey.keyPair.private),
+          signedPreKeyPublic: Buffer.from(creds.signedPreKey.keyPair.public),
+          signedPreKeySignature: Buffer.from(creds.signedPreKey.signature),
+          registrationId: creds.registrationId,
+          advSecretKey: creds.advSecretKey,
+          nextPreKeyId: creds.nextPreKeyId,
+          firstUnuploadedPreKeyId: creds.firstUnuploadedPreKeyId,
+          serverHasPreKeys: creds.serverHasPreKeys,
+          processedHistoryMessages: creds.processedHistoryMessages,
+          accountSyncCounter: creds.accountSyncCounter,
+          accountSettings: creds.accountSettings,
+          registered: creds.registered,
+          pairingCode: creds.pairingCode,
+          lastPropHash: creds.lastPropHash,
+          routingInfo: creds.routingInfo ? Buffer.from(creds.routingInfo) : null,
+          userId: creds.me?.id || null,
+          userName: creds.me?.name || null,
+          userLid: creds.me?.lid || null,
+          signalIdentities: creds.signalIdentities as any,
+          myAppStateKeyId: creds.myAppStateKeyId,
+          lastAccountSyncTimestamp: creds.lastAccountSyncTimestamp,
+          platform: creds.platform,
+          nameDevice: `BZap-${this.instanceId}`,
+          numberDevice: creds.me?.id ? creds.me.id.split(':')[0] : null, // Extrai apenas a parte numérica
+          webhookUrl: null,
+          events: ['messages', 'connection'],
+          createdAt: new Date(),
+          updatedAt: new Date()
+        }
+      });
+      
       Logger.debug(`💾 Credenciais salvas para: ${this.instanceId}`);
     } catch (error) {
       Logger.error(`❌ Erro ao salvar credenciais para ${this.instanceId}:`, error);
@@ -211,20 +273,24 @@ export class AuthStateManager {
   }
   
   /**
-   * Carrega as credenciais
+   * Carrega as credenciais do banco
    */
   public async loadCreds(): Promise<AuthenticationCreds | null> {
     try {
-      if (!fs.existsSync(this.credsPath)) {
+      const instance = await prisma.instance.findUnique({
+        where: { instanceId: this.instanceId }
+      });
+      
+      if (!instance || !instance.noiseKeyPrivate) {
         return null;
       }
-      const data = JSON.parse(await fs.promises.readFile(this.credsPath, 'utf-8'));
-      const creds = this.deserializeCreds(data);
+      
+      const creds = this.deserializeCredsFromInstance(instance);
       
       // ✅ Validar campos obrigatórios após pair-success
-      if (creds.registered && (!creds.me || !creds.account || !creds.signalIdentities || !creds.platform)) {
+      if (creds.registered && (!creds.me || !creds.signalIdentities || !creds.platform)) {
         Logger.warn(`❌ Credenciais inválidas para ${this.instanceId}: campos obrigatórios ausentes após pair-success`);
-        Logger.warn(`registered: ${creds.registered}, me: ${!!creds.me}, account: ${!!creds.account}, signalIdentities: ${!!creds.signalIdentities}, platform: ${!!creds.platform}`);
+        Logger.warn(`registered: ${creds.registered}, me: ${!!creds.me}, signalIdentities: ${!!creds.signalIdentities}, platform: ${!!creds.platform}`);
         return null; // Força novo QR
       }
       
@@ -235,34 +301,90 @@ export class AuthStateManager {
     }
   }
 
-  private async saveKeys(keys: any): Promise<void> {
-    try {
-      await fs.promises.writeFile(this.keysPath, JSON.stringify(keys, null, 2));
-    } catch (error) {
-      Logger.error(`❌ Erro ao salvar chaves para ${this.instanceId}:`, error);
-      throw error;
-    }
-  }
-
+  /**
+   * Carrega as chaves do banco para o cache
+   */
   private async loadKeysToCache(): Promise<void> {
+    if (this.keysCacheLoaded) return;
+    
     try {
-      if (!fs.existsSync(this.keysPath)) {
-        return;
+      // Carrega pre-keys
+      const preKeys = await prisma.preKey.findMany({
+        where: { instanceId: this.instanceId }
+      });
+      
+      for (const preKey of preKeys) {
+        this.keysCache.set(`pre-key:${preKey.keyId}`, {
+          keyId: preKey.keyId,
+          public: new Uint8Array(preKey.publicKey),
+          private: new Uint8Array(preKey.privateKey)
+        });
       }
-      const data = JSON.parse(await fs.promises.readFile(this.keysPath, 'utf-8'));
-      for (const [type, entries] of Object.entries(data)) {
-        for (const [id, value] of Object.entries(entries as any)) {
-          this.keysCache.set(`${type}:${id}`, value);
-        }
+      
+      // Carrega sessions
+      const sessions = await prisma.session.findMany({
+        where: { instanceId: this.instanceId }
+      });
+      
+      for (const session of sessions) {
+        this.keysCache.set(`session:${session.sessionId}`, {
+          id: session.sessionId,
+          session: new Uint8Array(session.sessionData)
+        });
       }
+      
+      // Carrega sender-keys
+      const senderKeys = await prisma.senderKey.findMany({
+        where: { instanceId: this.instanceId }
+      });
+      
+      for (const senderKey of senderKeys) {
+        const key = `${senderKey.groupId}:${senderKey.senderId}`;
+        this.keysCache.set(`sender-key:${key}`, {
+          groupId: senderKey.groupId,
+          senderId: senderKey.senderId,
+          senderKey: new Uint8Array(senderKey.senderKey)
+        });
+      }
+      
+      // Carrega app-state-sync-keys
+      const appStateKeys = await prisma.appStateSyncKey.findMany({
+        where: { instanceId: this.instanceId }
+      });
+      
+      for (const appStateKey of appStateKeys) {
+        this.keysCache.set(`app-state-sync-key:${appStateKey.keyId}`, {
+          keyId: appStateKey.keyId,
+          keyData: new Uint8Array(appStateKey.keyData)
+        });
+      }
+      
+      // Carrega app-state-sync-versions
+      const appStateVersions = await prisma.appStateVersion.findMany({
+        where: { instanceId: this.instanceId }
+      });
+      
+      for (const version of appStateVersions) {
+        this.keysCache.set(`app-state-sync-version:${version.name}`, {
+          version: version.version,
+          hash: version.hash ? new Uint8Array(version.hash) : new Uint8Array()
+        });
+      }
+      
+      this.keysCacheLoaded = true;
+      Logger.debug(`🔑 Chaves carregadas do banco para: ${this.instanceId}`);
     } catch (error) {
       Logger.error(`❌ Erro ao carregar chaves para ${this.instanceId}:`, error);
     }
   }
 
+  /**
+   * Cria o store de chaves compatível com Baileys
+   */
   private createKeysStore(): SignalKeyStore {
     return {
       get: async (type: string, ids: string[]) => {
+        await this.loadKeysToCache();
         const result: { [id: string]: any } = {};
         for (const id of ids) {
           result[id] = this.keysCache.get(`${type}:${id}`) || null;
@@ -280,20 +402,163 @@ export class AuthStateManager {
     };
   }
 
+  /**
+   * Salva as chaves no banco com debounce
+   */
   private saveKeysTimeout?: NodeJS.Timeout;
   private async debouncedSaveKeys(): Promise<void> {
     if (this.saveKeysTimeout) {
       clearTimeout(this.saveKeysTimeout);
     }
     this.saveKeysTimeout = setTimeout(async () => {
-      const data: any = {};
+      await this.saveKeysToDatabase();
+    }, 250);
+  }
+
+  /**
+   * Persiste as chaves do cache no banco
+   */
+  private async saveKeysToDatabase(): Promise<void> {
+    try {
+      const operations: Promise<any>[] = [];
+      
       for (const [key, value] of this.keysCache.entries()) {
         const [type, id] = key.split(':');
-        if (!data[type]) data[type] = {};
-        data[type][id] = value;
+        
+        switch (type) {
+          case 'pre-key':
+            if (value) {
+              operations.push(
+                prisma.preKey.upsert({
+                  where: {
+                    instanceId_keyId: {
+                      instanceId: this.instanceId,
+                      keyId: parseInt(id)
+                    }
+                  },
+                  update: {
+                    publicKey: Buffer.from(value.public),
+                    privateKey: Buffer.from(value.private),
+                    used: false
+                  },
+                  create: {
+                    instanceId: this.instanceId,
+                    keyId: parseInt(id),
+                    publicKey: Buffer.from(value.public),
+                    privateKey: Buffer.from(value.private),
+                    used: false
+                  }
+                })
+              );
+            }
+            break;
+            
+          case 'session':
+            if (value) {
+              operations.push(
+                prisma.session.upsert({
+                  where: {
+                    instanceId_sessionId: {
+                      instanceId: this.instanceId,
+                      sessionId: id
+                    }
+                  },
+                  update: {
+                    sessionData: Buffer.from(value.session)
+                  },
+                  create: {
+                    instanceId: this.instanceId,
+                    sessionId: id,
+                    sessionData: Buffer.from(value.session)
+                  }
+                })
+              );
+            }
+            break;
+            
+          case 'sender-key':
+            if (value) {
+              const [groupId, senderId] = id.split(':');
+              operations.push(
+                prisma.senderKey.upsert({
+                  where: {
+                    instanceId_groupId_senderId: {
+                      instanceId: this.instanceId,
+                      groupId: groupId,
+                      senderId: senderId
+                    }
+                  },
+                  update: {
+                    senderKey: Buffer.from(value.senderKey)
+                  },
+                  create: {
+                    instanceId: this.instanceId,
+                    groupId: groupId,
+                    senderId: senderId,
+                    senderKey: Buffer.from(value.senderKey)
+                  }
+                })
+              );
+            }
+            break;
+            
+          case 'app-state-sync-key':
+            if (value) {
+              operations.push(
+                prisma.appStateSyncKey.upsert({
+                  where: {
+                    instanceId_keyId: {
+                      instanceId: this.instanceId,
+                      keyId: id
+                    }
+                  },
+                  update: {
+                    keyData: Buffer.from(value.keyData)
+                  },
+                  create: {
+                    instanceId: this.instanceId,
+                    keyId: id,
+                    keyData: Buffer.from(value.keyData)
+                  }
+                })
+              );
+            }
+            break;
+            
+          case 'app-state-sync-version':
+            if (value) {
+              operations.push(
+                prisma.appStateVersion.upsert({
+                  where: {
+                    instanceId_name: {
+                      instanceId: this.instanceId,
+                      name: id
+                    }
+                  },
+                  update: {
+                    version: value.version,
+                    hash: Buffer.from(value.hash)
+                  },
+                  create: {
+                    instanceId: this.instanceId,
+                    name: id,
+                    version: value.version,
+                    hash: Buffer.from(value.hash)
+                  }
+                })
+              );
+            }
+            break;
+        }
       }
-      await this.saveKeys(data);
-    }, 250);
+      
+      if (operations.length > 0) {
+        await Promise.all(operations);
+        Logger.debug(`💾 ${operations.length} chaves salvas no banco para: ${this.instanceId}`);
+      }
+    } catch (error) {
+      Logger.error(`❌ Erro ao salvar chaves no banco para ${this.instanceId}:`, error);
+    }
   }
 
   private generateAuthCreds(): AuthenticationCreds {
@@ -390,6 +655,52 @@ export class AuthStateManager {
     };
   }
 
+  private deserializeCredsFromInstance(instance: any): AuthenticationCreds {
+    return {
+      noiseKey: {
+        private: new Uint8Array(instance.noiseKeyPrivate),
+        public: new Uint8Array(instance.noiseKeyPublic)
+      },
+      pairingEphemeralKeyPair: {
+        private: new Uint8Array(instance.pairingEphemeralKeyPrivate),
+        public: new Uint8Array(instance.pairingEphemeralKeyPublic)
+      },
+      signedIdentityKey: {
+        private: new Uint8Array(instance.signedIdentityKeyPrivate),
+        public: new Uint8Array(instance.signedIdentityKeyPublic)
+      },
+      signedPreKey: {
+        keyId: instance.signedPreKeyId,
+        keyPair: {
+          private: new Uint8Array(instance.signedPreKeyPrivate),
+          public: new Uint8Array(instance.signedPreKeyPublic)
+        },
+        signature: new Uint8Array(instance.signedPreKeySignature)
+      },
+      registrationId: instance.registrationId,
+      advSecretKey: instance.advSecretKey,
+      nextPreKeyId: instance.nextPreKeyId,
+      firstUnuploadedPreKeyId: instance.firstUnuploadedPreKeyId,
+      serverHasPreKeys: instance.serverHasPreKeys,
+      processedHistoryMessages: instance.processedHistoryMessages || [],
+      accountSyncCounter: instance.accountSyncCounter || 0,
+      accountSettings: instance.accountSettings || { unarchiveChats: false },
+      registered: instance.registered || false,
+      pairingCode: instance.pairingCode || undefined,
+      lastPropHash: instance.lastPropHash || undefined,
+      routingInfo: instance.routingInfo ? new Uint8Array(instance.routingInfo) : undefined,
+      me: instance.userId ? {
+        id: instance.userId,
+        name: instance.userName || undefined,
+        lid: instance.userLid || undefined
+      } : undefined,
+      signalIdentities: instance.signalIdentities || undefined,
+      myAppStateKeyId: instance.myAppStateKeyId || undefined,
+      lastAccountSyncTimestamp: instance.lastAccountSyncTimestamp || undefined,
+      platform: instance.platform || undefined
+    };
+  }
+
   private deserializeCreds(data: any): AuthenticationCreds {
     const parseKeyPair = (obj: any): KeyPair => ({
       private: Buffer.from(obj.private, 'base64'),
@@ -433,149 +744,91 @@ export class AuthStateManager {
     };
   }
 
+  /**
+   * Remove o estado de autenticação do banco
+   */
   public async removeAuthState(): Promise<void> {
     try {
-      if (fs.existsSync(this.sessionPath)) {
-        await fs.promises.rm(this.sessionPath, { recursive: true, force: true });
-        Logger.info(`🗑️ Sessão removida: ${this.instanceId}`);
-      }
+      // Remove todas as chaves relacionadas
+      await Promise.all([
+        prisma.preKey.deleteMany({ where: { instanceId: this.instanceId } }),
+        prisma.session.deleteMany({ where: { instanceId: this.instanceId } }),
+        prisma.senderKey.deleteMany({ where: { instanceId: this.instanceId } }),
+        prisma.appStateSyncKey.deleteMany({ where: { instanceId: this.instanceId } }),
+        prisma.appStateVersion.deleteMany({ where: { instanceId: this.instanceId } }),
+        prisma.instance.delete({ where: { instanceId: this.instanceId } })
+      ]);
+      
+      // Limpa o cache
+      this.keysCache.clear();
+      this.keysCacheLoaded = false;
+      
+      Logger.info(`🗑️ Sessão removida do banco: ${this.instanceId}`);
     } catch (error) {
       Logger.error(`❌ Erro ao remover sessão ${this.instanceId}:`, error);
     }
   }
 
-  public hasAuthState(): boolean {
-    return fs.existsSync(this.credsPath);
+  /**
+   * Verifica se existe estado de autenticação
+   */
+  public async hasAuthState(): Promise<boolean> {
+    try {
+      const instance = await prisma.instance.findUnique({
+        where: { instanceId: this.instanceId }
+      });
+      return !!instance;
+    } catch (error) {
+      Logger.error(`❌ Erro ao verificar estado de autenticação para ${this.instanceId}:`, error);
+      return false;
+    }
   }
 
   /**
    * Implementação do useMultiFileAuthState compatível com Baileys original
+   * Agora usando Prisma em vez de arquivos
    */
-  public async useMultiFileAuthState(folder: string): Promise<{
+  public async useMultiFileAuthState(): Promise<{
     state: AuthenticationState;
     saveCreds: () => Promise<void>;
   }> {
-    // Mapa de mutexes para controle de acesso aos arquivos
-    const fileLocks = new Map<string, Mutex>();
-    
-    // Obtém ou cria um mutex para um caminho específico
-    const getFileLock = (path: string): Mutex => {
-      let mutex = fileLocks.get(path);
-      if (!mutex) {
-        mutex = new Mutex();
-        fileLocks.set(path, mutex);
-      }
-      return mutex;
-    };
-    
-    // Função para escrever dados em arquivo
-    const writeData = async (data: any, file: string) => {
-      const filePath = path.join(folder, this.fixFileName(file)!);
-      const mutex = getFileLock(filePath);
-      
-      return mutex.acquire().then(async release => {
-        try {
-          await writeFile(filePath, JSON.stringify(data, BufferJSON.replacer));
-        } finally {
-          release();
-        }
-      });
-    };
-    
-    // Função para ler dados de arquivo
-    const readData = async (file: string) => {
-      try {
-        const filePath = path.join(folder, this.fixFileName(file)!);
-        const mutex = getFileLock(filePath);
-        
-        return await mutex.acquire().then(async release => {
-          try {
-            const data = await readFile(filePath, { encoding: 'utf-8' });
-            return JSON.parse(data, BufferJSON.reviver);
-          } finally {
-            release();
-          }
-        });
-      } catch (error) {
-        return null;
-      }
-    };
-    
-    // Função para remover dados
-    const removeData = async (file: string) => {
-      try {
-        const filePath = path.join(folder, this.fixFileName(file)!);
-        const mutex = getFileLock(filePath);
-        
-        return mutex.acquire().then(async release => {
-          try {
-            await unlink(filePath);
-          } catch {
-          } finally {
-            release();
-          }
-        });
-      } catch {}
-    };
-    
-    // Verifica se a pasta existe, se não, cria
-    const folderInfo = await stat(folder).catch(() => {});
-    if (folderInfo) {
-      if (!folderInfo.isDirectory()) {
-        throw new Error(
-          `found something that is not a directory at ${folder}, either delete it or specify a different location`
-        );
-      }
-    } else {
-      await mkdir(folder, { recursive: true });
-    }
-    
     // Carrega ou inicializa credenciais
-    const creds: AuthenticationCreds = (await readData('creds.json')) || this.initAuthCreds();
+    const creds: AuthenticationCreds = (await this.loadCreds()) || this.initAuthCreds();
     
     return {
       state: {
         creds,
         keys: {
           get: async (type: string, ids: string[]) => {
+            await this.loadKeysToCache();
             const data: { [id: string]: any } = {};
-            await Promise.all(
-              ids.map(async id => {
-                const value = await readData(`${type}-${id}.json`);
-                // Tratamento especial para app-state-sync-key se necessário
-                if (type === 'app-state-sync-key' && value) {
-                  // Aqui poderia ter tratamento específico do proto se necessário
-                  // value = proto.Message.AppStateSyncKeyData.create(value);
-                }
-                data[id] = value;
-              })
-            );
+            
+            for (const id of ids) {
+              const value = this.keysCache.get(`${type}:${id}`);
+              data[id] = value || null;
+            }
+            
             return data;
           },
           set: async (data: { [type: string]: { [id: string]: any } }) => {
-            const tasks: Promise<void>[] = [];
             for (const category in data) {
               for (const id in data[category]) {
                 const value = data[category][id];
-                const file = `${category}-${id}.json`;
-                tasks.push(value ? writeData(value, file) : removeData(file));
+                if (value) {
+                  this.keysCache.set(`${category}:${id}`, value);
+                } else {
+                  this.keysCache.delete(`${category}:${id}`);
+                }
               }
             }
-            await Promise.all(tasks);
+            await this.debouncedSaveKeys();
           }
         }
       },
       saveCreds: async () => {
-        return writeData(creds, 'creds.json');
+        return this.saveCreds(creds);
       }
     };
-  }
-  
-  /**
-   * Corrige nomes de arquivo para serem compatíveis com sistema de arquivos
-   */
-  private fixFileName(file?: string): string | undefined {
-    return file?.replace(/\//g, '__')?.replace(/:/g, '-');
   }
   
   /**
@@ -605,6 +858,9 @@ export class AuthStateManager {
     };
   }
   
+  /**
+   * Cria estado de autenticação compatível com Baileys
+   */
   public async createBaileysCompatibleAuthState(): Promise<{
     state: AuthenticationState;
     saveCreds: () => Promise<void>;
@@ -617,19 +873,13 @@ export class AuthStateManager {
     return { state, saveCreds };
   }
 
+  /**
+   * Atualiza credenciais parcialmente
+   */
   public async updateCreds(credsUpdate: Partial<AuthenticationCreds>): Promise<void> {
     const existing = await this.loadCreds();
     if (!existing) return;
     const updated = { ...existing, ...credsUpdate } as AuthenticationCreds;
     await this.saveCreds(updated);
-  }
-
-  private ensureSessionDirectory(): void {
-    if (!fs.existsSync(AuthStateManager.SESSIONS_DIR)) {
-      fs.mkdirSync(AuthStateManager.SESSIONS_DIR, { recursive: true });
-    }
-    if (!fs.existsSync(this.sessionPath)) {
-      fs.mkdirSync(this.sessionPath, { recursive: true });
-    }
   }
 }

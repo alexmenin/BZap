@@ -1,0 +1,182 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Modelo principal para instâncias do WhatsApp
+model Instance {
+  id                          String    @id @default(cuid())
+  instanceId                  String    @unique
+  nameDevice                  String?
+  numberDevice                String?
+  webhookUrl                  String?
+  events                      String[]  @default([])
+  status                      String    @default("disconnected") // disconnected, connecting, connected, qr_code
+  
+  // Credenciais de autenticação
+  noiseKeyPrivate             Bytes?
+  noiseKeyPublic              Bytes?
+  pairingEphemeralKeyPrivate  Bytes?
+  pairingEphemeralKeyPublic   Bytes?
+  signedIdentityKeyPrivate    Bytes?
+  signedIdentityKeyPublic     Bytes?
+  signedPreKeyId              Int?
+  signedPreKeyPrivate         Bytes?
+  signedPreKeyPublic          Bytes?
+  signedPreKeySignature       Bytes?
+  registrationId              Int?
+  advSecretKey                String?
+  nextPreKeyId                Int       @default(1)
+  firstUnuploadedPreKeyId     Int       @default(1)
+  serverHasPreKeys            Boolean   @default(false)
+  
+  // Campos obrigatórios Baileys
+  processedHistoryMessages    Json      @default("[]")
+  accountSyncCounter          Int       @default(0)
+  accountSettings             Json      @default("{\"unarchiveChats\": false}")
+  registered                  Boolean   @default(false)
+  
+  // Campos opcionais
+  pairingCode                 String?
+  lastPropHash                String?
+  routingInfo                 Bytes?
+  
+  // Informações do usuário
+  userId                      String?
+  userName                    String?
+  userLid                     String?
+  
+  // Identidades Signal
+  signalIdentities            Json      @default("[]")
+  myAppStateKeyId             String?
+  lastAccountSyncTimestamp    BigInt?
+  platform                    String?
+  
+  // Metadados
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+  lastAccess                  DateTime  @default(now())
+  
+  // Relacionamentos
+  preKeys                     PreKey[]
+  sessions                    Session[]
+  connectionLogs              ConnectionLog[]
+  messageLogs                 MessageLog[]
+  
+  @@map("instances")
+}
+
+// Modelo para pre-keys
+model PreKey {
+  id          String    @id @default(cuid())
+  instanceId  String
+  keyId       Int
+  privateKey  Bytes
+  publicKey   Bytes
+  used        Boolean   @default(false)
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+  
+  // Relacionamento
+  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  
+  @@unique([instanceId, keyId])
+  @@map("pre_keys")
+}
+
+// Modelo para sessões Signal
+model Session {
+  id          String    @id @default(cuid())
+  instanceId  String
+  sessionId   String    // JID ou identificador da sessão
+  sessionData Bytes     // Dados da sessão serializada
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relacionamento
+  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  
+  @@unique([instanceId, sessionId])
+  @@map("sessions")
+}
+
+// Modelo para sender keys (chaves de grupo)
+model SenderKey {
+  id          String    @id @default(cuid())
+  instanceId  String
+  groupId     String
+  senderId    String
+  senderKey   Bytes
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@unique([instanceId, groupId, senderId])
+  @@map("sender_keys")
+}
+
+// Modelo para chaves de sincronização de app state
+model AppStateSyncKey {
+  id          String    @id @default(cuid())
+  instanceId  String
+  keyId       String
+  keyData     Bytes
+  createdAt   DateTime  @default(now())
+  
+  @@unique([instanceId, keyId])
+  @@map("app_state_sync_keys")
+}
+
+// Modelo para versões de app state
+model AppStateVersion {
+  id          String    @id @default(cuid())
+  instanceId  String
+  name        String
+  version     Int
+  hash        Bytes?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  @@unique([instanceId, name])
+  @@map("app_state_versions")
+}
+
+// Modelo para logs de conexão
+model ConnectionLog {
+  id          String    @id @default(cuid())
+  instanceId  String
+  event       String    // connected, disconnected, qr_generated, etc.
+  status      String?
+  message     String?
+  metadata    Json?
+  timestamp   DateTime  @default(now())
+  
+  // Relacionamento
+  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  
+  @@map("connection_logs")
+}
+
+// Modelo para logs de mensagens
+model MessageLog {
+  id          String    @id @default(cuid())
+  instanceId  String
+  messageId   String?
+  fromJid     String?
+  toJid       String?
+  messageType String?   // text, image, audio, etc.
+  content     String?
+  metadata    Json?
+  timestamp   DateTime  @default(now())
+  
+  // Relacionamento
+  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+  
+  @@map("message_logs")
+}
