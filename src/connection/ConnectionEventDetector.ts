@@ -474,10 +474,8 @@ export class ConnectionEventDetector extends EventEmitter {
     // Emite evento específico para que o WebSocketClient possa processar
     this.emit('connection.pair-device', data);
     
-    // Atualiza estado para indicar que estamos aguardando QR
-    this.updateConnectionState(ConnectionState.connecting, {
-      isNewLogin: true
-    });
+    // ✅ CORREÇÃO: NÃO emitir isNewLogin no pair-device, apenas no pair-success
+    this.updateConnectionState(ConnectionState.connecting);
   }
 
   /**
@@ -506,8 +504,8 @@ export class ConnectionEventDetector extends EventEmitter {
     // console.log(`🔍 [DEBUG] Dados da mensagem (primeiros 100 bytes): ${data.toString('hex').substring(0, 200)}`);
     
     this.isAuthenticated = true;
+    // ✅ CORREÇÃO: NÃO emitir isNewLogin no auth-success, apenas no pair-success
     this.updateConnectionState(ConnectionState.open, {
-      isNewLogin: true,
       isOnline: true,
       receivedPendingNotifications: false
     });

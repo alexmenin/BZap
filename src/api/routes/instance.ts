@@ -204,20 +204,19 @@ router.post('/:id/connect', async (req: Request, res: Response) => {
     }
 
     console.log('🔍 [ROUTE] Iniciando processo de conexão...');
-    // Inicia o processo de conexão de forma assíncrona
     console.log('🔍 [ROUTE] Chamando instanceManager.connectInstance...');
     
-    // Inicia a conexão sem aguardar o resultado
+    // Inicia a conexão de forma assíncrona
     instanceManager.connectInstance(id).catch(error => {
       Logger.error(`❌ Erro na conexão assíncrona da instância ${id}:`, error);
     });
     
     console.log('🔍 [ROUTE] Conexão iniciada, retornando resposta imediata');
     
-    // Retorna imediatamente - QR code e status updates virão via SSE/Webhook
+    // Retorna imediatamente - QR code e status updates virão via WebSocket
     return res.json({
       success: true,
-      message: 'Processo de conexão iniciado com sucesso',
+      message: 'Conexão iniciada com sucesso - aguarde o QR code via WebSocket',
       data: {
         id,
         status: 'connecting'

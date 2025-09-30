@@ -178,13 +178,22 @@ export class InstanceManager extends EventEmitter {
       const data = instance.getData();
       console.log('🔍 [INSTANCE_MANAGER] Status da instância:', data.status);
       
+      // ✅ CORREÇÃO: Retornar o status real da instância, não hardcoded 'connected'
       if (data.status === 'connected') {
-        console.log('🔍 [INSTANCE_MANAGER] Instância já conectada');
+        console.log('🔍 [INSTANCE_MANAGER] Instância já conectada - retornando status real');
         return {
-          success: false,
+          success: true,
           error: 'Instância já está conectada',
-          code: 'ALREADY_CONNECTED',
-          status: data.status
+          status: data.status // Retorna o status real da instância
+        };
+      }
+      
+      if (data.status === 'qr_code') {
+        console.log('🔍 [INSTANCE_MANAGER] Instância com QR ativo - retornando status real');
+        return {
+          success: true,
+          error: 'QR code já está sendo gerado',
+          status: data.status // Retorna o status real da instância
         };
       }
 
@@ -403,8 +412,15 @@ export class InstanceManager extends EventEmitter {
       this.emit('instance:status_changed', instanceId, status);
     });
     
-    instance.on('qr_code', (qrCode) => {
-      this.emit('instance:qr_code', instanceId, qrCode);
+    instance.on('qr_code', (qrData) => {
+      // Se vier objeto, extrai a string qr; se vier string, usa diretamente
+      const qrString = typeof qrData === 'string' ? qrData : qrData.qr;
+      const expiresAt = typeof qrData === 'object' ? qrData.expiresAt : undefined;
+      
+      this.emit('instance:qr_code', instanceId, {
+        qr: qrString,
+        expiresAt: expiresAt
+      });
     });
     
     instance.on('connected', () => {

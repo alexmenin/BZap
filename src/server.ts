@@ -270,6 +270,59 @@ class WhatsAppAPIServer {
   }
 
   /**
+   * Configura callbacks do WebSocket Server
+   */
+  private setupWebSocketCallbacks(): void {
+    if (!this.webSocketServer) return;
+
+    // Configura callback para obter status da instância
+    this.webSocketServer.onGetInstanceStatus(async (instanceId: string) => {
+      try {
+        const instance = await this.instanceManager.getInstance(instanceId);
+        if (instance) {
+          return {
+            status: instance.status,
+            phoneNumber: instance.phoneNumber,
+            isConnected: instance.status === 'connected',
+            lastSeen: instance.lastSeen,
+            timestamp: new Date().toISOString()
+          };
+        }
+        return null;
+      } catch (error) {
+        Logger.error(`Erro ao obter status da instância ${instanceId}:`, error);
+        return null;
+      }
+    });
+
+    // Configura callback para obter QR code da instância
+    this.webSocketServer.onGetQRCode(async (instanceId: string) => {
+      try {
+        Logger.info(`🔍 Callback QR code chamado para instância: ${instanceId}`);
+        const result = await this.instanceManager.connectInstance(instanceId);
+        Logger.info(`🔍 Resultado do connectInstance:`, result);
+        
+        if (result.success) {
+          // Se a conexão foi bem-sucedida, buscar a instância para obter o QR code
+          const instance = await this.instanceManager.getInstance(instanceId);
+          if (instance && instance.qrCode) {
+            Logger.info(`✅ QR code encontrado para instância ${instanceId}`);
+            return instance.qrCode;
+          }
+        }
+        
+        Logger.warn(`⚠️ QR code não encontrado para instância ${instanceId}`);
+        return null;
+      } catch (error) {
+        Logger.error(`❌ Erro ao obter QR code da instância ${instanceId}:`, error);
+        return null;
+      }
+    });
+
+    Logger.info('✅ Callbacks do WebSocket configurados');
+  }
+
+  /**
    * Configura tratamento de erros
    */
   private setupErrorHandling(): void {
@@ -366,6 +419,7 @@ class WhatsAppAPIServer {
     // Inicializa WebSocket Server
     this.webSocketServer = new WebSocketServer(httpServer);
     this.setupWebSocketIntegration();
+    this.setupWebSocketCallbacks();
     
     this.server = httpServer.listen(this.config.port, this.config.host, () => {
       Logger.info(`🚀 Servidor rodando em http://${this.config.host}:${this.config.port}`);

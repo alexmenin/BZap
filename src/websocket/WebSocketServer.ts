@@ -19,8 +19,8 @@ export interface WebSocketEvents {
 export class WebSocketServer extends EventEmitter {
   private io: SocketIOServer;
   private connectedClients: Map<string, any> = new Map();
-  private getInstanceStatusCallback?: (instanceId: string) => any;
-  private getQRCodeCallback?: (instanceId: string) => string | null;
+  private getInstanceStatusCallback?: (instanceId: string) => Promise<any> | any;
+  private getQRCodeCallback?: (instanceId: string) => Promise<string | null> | string | null;
 
   constructor(httpServer: HttpServer) {
     super();
@@ -46,41 +46,63 @@ export class WebSocketServer extends EventEmitter {
       this.connectedClients.set(socket.id, socket);
 
       // Handler para cliente se inscrever em updates de uma instância específica
-      socket.on('subscribe_instance', (instanceId: string) => {
+      socket.on('subscribe_instance', (data: { instanceId: string } | string) => {
+        const instanceId = typeof data === 'string' ? data : data.instanceId;
         socket.join(`instance_${instanceId}`);
         Logger.info(`📡 Cliente ${socket.id} inscrito na instância ${instanceId}`);
       });
 
       // Handler para cliente se desinscrever de uma instância
-      socket.on('unsubscribe_instance', (instanceId: string) => {
+      socket.on('unsubscribe_instance', (data: { instanceId: string } | string) => {
+        const instanceId = typeof data === 'string' ? data : data.instanceId;
         socket.leave(`instance_${instanceId}`);
         Logger.info(`📡 Cliente ${socket.id} desinscrito da instância ${instanceId}`);
       });
 
       // Handler para solicitar status atual de uma instância
-      socket.on('get_instance_status', (instanceId: string) => {
+      socket.on('get_instance_status', async (data: { instanceId: string } | string) => {
+        const instanceId = typeof data === 'string' ? data : data.instanceId;
+        Logger.info(`📊 Solicitação de status recebida para instância: ${instanceId}`);
+        
         if (this.getInstanceStatusCallback) {
-          const status = this.getInstanceStatusCallback(instanceId);
-          socket.emit('instance_status_response', {
-            instanceId,
-            status,
-            timestamp: new Date().toISOString()
-          });
+          try {
+            const status = await this.getInstanceStatusCallback(instanceId);
+            Logger.info(`📊 Status obtido para instância ${instanceId}:`, status);
+            socket.emit('instance_status_response', {
+              instanceId,
+              status,
+              timestamp: new Date().toISOString()
+            });
+          } catch (error) {
+            Logger.error(`❌ Erro ao obter status da instância ${instanceId}:`, error);
+            socket.emit('error', { message: 'Erro ao obter status da instância' });
+          }
         } else {
+          Logger.error('❌ Callback de status não configurado');
           socket.emit('error', { message: 'Callback de status não configurado' });
         }
       });
 
       // Handler para solicitar QR code atual de uma instância
-      socket.on('get_qr_code', (instanceId: string) => {
+      socket.on('get_qr_code', async (data: { instanceId: string } | string) => {
+        const instanceId = typeof data === 'string' ? data : data.instanceId;
+        Logger.info(`📱 Solicitação de QR code recebida para instância: ${instanceId}`);
+        
         if (this.getQRCodeCallback) {
-          const qrCode = this.getQRCodeCallback(instanceId);
-          socket.emit('qr_code_response', {
-            instanceId,
-            qrCode,
-            timestamp: new Date().toISOString()
-          });
+          try {
+            const qrCode = await this.getQRCodeCallback(instanceId);
+            Logger.info(`📱 QR code obtido para instância ${instanceId}:`, qrCode ? 'Disponível' : 'Não disponível');
+            socket.emit('qr_code_response', {
+              instanceId,
+              qrCode,
+              timestamp: new Date().toISOString()
+            });
+          } catch (error) {
+            Logger.error(`❌ Erro ao obter QR code da instância ${instanceId}:`, error);
+            socket.emit('error', { message: 'Erro ao obter QR code' });
+          }
         } else {
+          Logger.error('❌ Callback de QR code não configurado');
           socket.emit('error', { message: 'Callback de QR code não configurado' });
         }
       });
@@ -186,14 +208,14 @@ export class WebSocketServer extends EventEmitter {
   /**
    * Configura callback para obter status da instância
    */
-  public onGetInstanceStatus(callback: (instanceId: string) => any): void {
+  public onGetInstanceStatus(callback: (instanceId: string) => Promise<any> | any): void {
     this.getInstanceStatusCallback = callback;
   }
 
   /**
    * Configura callback para obter QR code
    */
-  public onGetQRCode(callback: (instanceId: string) => string | null): void {
+  public onGetQRCode(callback: (instanceId: string) => Promise<string | null> | string | null): void {
     this.getQRCodeCallback = callback;
   }
 

@@ -23,17 +23,30 @@ class WhatsAppManager {
         }
 
         console.log('🔌 Conectando ao WebSocket...');
+        console.log('🔍 [DEBUG] URL atual:', window.location.origin);
+        console.log('🔍 [DEBUG] Socket.IO disponível:', typeof io !== 'undefined');
         
         // Conecta ao servidor WebSocket usando Socket.IO
-        this.socket = io();
+        try {
+            this.socket = io();
+            console.log('🔍 [DEBUG] Socket criado:', !!this.socket);
+        } catch (error) {
+            console.error('❌ Erro ao criar socket:', error);
+            return;
+        }
 
         // Event listeners do WebSocket
         this.socket.on('connect', () => {
             console.log('✅ Conectado ao WebSocket');
+            console.log('🔍 [DEBUG] Socket ID:', this.socket.id);
         });
 
         this.socket.on('disconnect', (reason) => {
             console.log('❌ Desconectado do WebSocket:', reason);
+        });
+
+        this.socket.on('connect_error', (error) => {
+            console.error('❌ Erro de conexão WebSocket:', error);
         });
 
         this.socket.on('instance_status_update', (data) => {
@@ -80,9 +93,18 @@ class WhatsAppManager {
         if (this.currentQrInstance && this.currentQrInstance.id === data.instanceId) {
             const status = data.status;
             
+            // Verifica se a instância já está conectada para evitar processar QR codes desnecessários
+            const currentInstanceStatus = this.getCurrentInstanceStatus(data.instanceId);
+            
             // Se conectou com sucesso
             if (status === 'connected') {
                 this.handleSuccessfulConnection(data.instanceId);
+                return;
+            }
+            
+            // Ignora QR codes se já está conectado
+            if (status === 'qr_code' && currentInstanceStatus === 'connected') {
+                console.log('⚠️ Ignorando QR code - instância já conectada');
                 return;
             }
             
@@ -564,94 +586,17 @@ class WhatsAppManager {
 
             const result = await response.json();
 
-            if (response.ok && result.data && result.data.qrCode) {
-                // Debug: verificar o QR code recebido
-                console.log('🔍 QR Code recebido da API:', result.data.qrCode);
-                console.log('🔍 Tipo do QR Code:', typeof result.data.qrCode);
+            if (response.ok && result.success) {
+                // Conexão iniciada com sucesso - aguardar QR code via WebSocket
+                console.log('✅ Conexão iniciada:', result.message);
                 
-                // Extrair o QR code correto do objeto
-                let qrCodeText;
-                if (typeof result.data.qrCode === 'object' && result.data.qrCode.qr) {
-                    qrCodeText = result.data.qrCode.qr;
-                    console.log('🔍 QR Code extraído do objeto:', qrCodeText);
-                } else if (typeof result.data.qrCode === 'string') {
-                    qrCodeText = result.data.qrCode;
-                    console.log('🔍 QR Code como string:', qrCodeText);
-                } else {
-                    throw new Error('Formato de QR Code inválido');
-                }
+                // Atualizar container para mostrar que está aguardando QR code
+                qrContainer.innerHTML = '<div class="loading"><i class="fas fa-spinner fa-spin"></i><br>Aguardando QR Code via WebSocket...</div>';
                 
-                console.log('🔍 Tamanho do QR Code:', qrCodeText.length);
-                
-                // Limpar container
-                qrContainer.innerHTML = '';
-                
-                // Gerar QR Code visual
-                const canvas = document.createElement('canvas');
-                
-                try {
-                    console.log('🔍 Tentando gerar QR com ecLevel L...');
-                    QrCreator.render({
-                        text: qrCodeText,
-                        radius: 0,
-                        ecLevel: 'L',
-                        fill: '#000000',
-                        background: '#FFFFFF',
-                        size: 300
-                    }, canvas);
-                    console.log('✅ QR Code gerado com sucesso (ecLevel L)');
-                } catch (error) {
-                    // Fallback: tentar com configurações alternativas
-                    console.warn('⚠️ Erro com ecLevel L, tentando com ecLevel M:', error.message);
-                    try {
-                        QrCreator.render({
-                            text: qrCodeText,
-                            radius: 0,
-                            ecLevel: 'M',
-                            fill: '#000000',
-                            background: '#FFFFFF',
-                            size: 256
-                        }, canvas);
-                        console.log('✅ QR Code gerado com sucesso (ecLevel M)');
-                    } catch (fallbackError) {
-                        console.error('❌ Erro mesmo com ecLevel M:', fallbackError.message);
-                        throw fallbackError;
-                    }
-                }
-                
-                qrContainer.appendChild(canvas);
-                
-                // Mostrar informações do QR code
-                const infoContainer = document.createElement('div');
-                infoContainer.className = 'qr-info';
-                infoContainer.style.textAlign = 'center';
-                infoContainer.style.marginTop = '15px';
-                
-                // Mostrar progresso se disponível
-                if (result.data.qrIndex !== undefined && result.data.qrTotal !== undefined) {
-                    const progressText = document.createElement('p');
-                    progressText.className = 'text-muted';
-                    progressText.textContent = `QR Code ${result.data.qrIndex + 1} de ${result.data.qrTotal}`;
-                    infoContainer.appendChild(progressText);
-                }
-                
-                // Mostrar tempo de expiração
-                if (result.data.expiresAt) {
-                    const expiresAt = new Date(result.data.expiresAt);
-                    const expiresText = document.createElement('p');
-                    expiresText.className = 'text-muted';
-                    expiresText.textContent = `Expira em: ${expiresAt.toLocaleString('pt-BR')}`;
-                    infoContainer.appendChild(expiresText);
-                    
-                    // Adicionar countdown
-                    this.startQrCountdown(expiresText, expiresAt);
-                }
-                
-                qrContainer.appendChild(infoContainer);
-                
-                this.currentQrData = qrCodeText;
+                // O QR code virá via WebSocket, não pela resposta da API
+                return;
             } else {
-                throw new Error(result.message || 'QR Code não encontrado na resposta');
+                throw new Error(result.message || 'Erro ao iniciar conexão');
             }
         } catch (error) {
             console.error('Erro ao gerar QR Code:', error);
@@ -896,7 +841,11 @@ class WhatsAppManager {
     }
 
     updateQrModalStatus(message, status) {
-        const qrContainer = document.getElementById('qrContainer');
+        const qrContainer = document.getElementById('qrCodeContainer');
+        if (!qrContainer) {
+            console.error('❌ Elemento qrCodeContainer não encontrado');
+            return;
+        }
         let statusElement = qrContainer.querySelector('.connection-status');
         
         if (!statusElement) {
@@ -1121,6 +1070,12 @@ class WhatsAppManager {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // Método para obter o status atual de uma instância
+    getCurrentInstanceStatus(instanceId) {
+        const instance = this.instances.find(inst => inst.id === instanceId);
+        return instance ? instance.status : null;
     }
 }
 

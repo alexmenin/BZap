@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug WebSocket - BZap</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .log {
+            background: #000;
+            color: #0f0;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 12px;
+            height: 400px;
+            overflow-y: auto;
+            margin: 20px 0;
+        }
+        .button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .button:hover {
+            background: #0056b3;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Debug WebSocket - BZap</h1>
+        
+        <div id="connectionStatus" class="status disconnected">
+            ❌ Desconectado
+        </div>
+        
+        <div>
+            <button class="button" onclick="connectWebSocket()">🔌 Conectar WebSocket</button>
+            <button class="button" onclick="disconnectWebSocket()">❌ Desconectar</button>
+            <button class="button" onclick="clearLog()">🧹 Limpar Log</button>
+            <button class="button" onclick="testQRCode()">📱 Testar QR Code</button>
+        </div>
+        
+        <div id="log" class="log"></div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let socket = null;
+        const logElement = document.getElementById('log');
+        const statusElement = document.getElementById('connectionStatus');
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logLine = `[${timestamp}] ${message}`;
+            console.log(logLine);
+            logElement.innerHTML += logLine + '\n';
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        function updateStatus(connected, socketId = null) {
+            if (connected) {
+                statusElement.className = 'status connected';
+                statusElement.innerHTML = `✅ Conectado${socketId ? ` (ID: ${socketId})` : ''}`;
+            } else {
+                statusElement.className = 'status disconnected';
+                statusElement.innerHTML = '❌ Desconectado';
+            }
+        }
+
+        function connectWebSocket() {
+            if (socket) {
+                log('⚠️ Socket já existe, desconectando primeiro...');
+                socket.disconnect();
+                socket = null;
+            }
+
+            log('🔌 Iniciando conexão WebSocket...');
+            log(`🔍 URL: ${window.location.origin}`);
+            log(`🔍 Socket.IO disponível: ${typeof io !== 'undefined'}`);
+
+            try {
+                socket = io();
+                log('✅ Socket criado com sucesso');
+
+                socket.on('connect', () => {
+                    log(`✅ Conectado ao WebSocket (ID: ${socket.id})`);
+                    updateStatus(true, socket.id);
+                });
+
+                socket.on('disconnect', (reason) => {
+                    log(`❌ Desconectado: ${reason}`);
+                    updateStatus(false);
+                });
+
+                socket.on('connect_error', (error) => {
+                    log(`❌ Erro de conexão: ${error.message}`);
+                    updateStatus(false);
+                });
+
+                socket.on('instance_status_update', (data) => {
+                    log(`📊 Status atualizado: ${JSON.stringify(data)}`);
+                });
+
+                socket.on('qr_code_generated', (data) => {
+                    log(`📱 QR Code gerado: ${JSON.stringify(data)}`);
+                });
+
+                socket.on('instance_connected', (data) => {
+                    log(`✅ Instância conectada: ${JSON.stringify(data)}`);
+                });
+
+                socket.on('instance_disconnected', (data) => {
+                    log(`❌ Instância desconectada: ${JSON.stringify(data)}`);
+                });
+
+                socket.on('qr_code_response', (data) => {
+                    log(`📱 QR Response: ${JSON.stringify(data)}`);
+                });
+
+                socket.on('instance_status_response', (data) => {
+                    log(`📊 Status Response: ${JSON.stringify(data)}`);
+                });
+
+                socket.on('error', (error) => {
+                    log(`❌ Erro: ${error}`);
+                });
+
+                // Escutar todos os eventos para debug
+                socket.onAny((eventName, ...args) => {
+                    log(`🎯 Evento recebido: ${eventName} - ${JSON.stringify(args)}`);
+                });
+
+            } catch (error) {
+                log(`❌ Erro ao criar socket: ${error.message}`);
+            }
+        }
+
+        function disconnectWebSocket() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+                log('❌ Socket desconectado manualmente');
+                updateStatus(false);
+            } else {
+                log('⚠️ Nenhum socket para desconectar');
+            }
+        }
+
+        function clearLog() {
+            logElement.innerHTML = '';
+        }
+
+        function testQRCode() {
+            if (!socket || !socket.connected) {
+                log('❌ Socket não conectado');
+                return;
+            }
+
+            log('📱 Solicitando QR Code...');
+            socket.emit('get_qr_code', { instanceId: 'a564e3d5-3f8c-4221-b782-7413b8e9f227' });
+        }
+
+        // Conectar automaticamente ao carregar a página
+        window.onload = () => {
+            log('🚀 Página carregada, conectando automaticamente...');
+            connectWebSocket();
+        };
+    </script>
+</body>
+</html>

@@ -848,34 +848,6 @@ export class WhatsAppInstance extends EventEmitter {
         }
       }
       
-      // Se é um novo login (pair-success processado)
-      if (update.isNewLogin) {
-        Logger.info(`✅ Novo login detectado via connection.update para instância: ${this.config.id}`);
-        
-        // Limpa QR code e timer
-        this.qrCode = undefined;
-        this.qrCodeExpiresAt = undefined;
-        if (this.qrCodeTimer) {
-          clearTimeout(this.qrCodeTimer);
-          this.qrCodeTimer = undefined;
-        }
-        
-        // Marca como conectado após pair-success
-        this.updateStatus('connected');
-        this.lastSeen = new Date();
-        this.startHeartbeat();
-        
-        // Emite evento de conexão bem-sucedida
-        this.emit('connected', {
-          instanceId: this.config.id,
-          phoneNumber: this.phoneNumber || 'Desconhecido',
-          profileName: this.profileName || 'WhatsApp User',
-          isNewLogin: true
-        });
-        
-        Logger.info(`🎉 Instância ${this.config.id} conectada com sucesso após pair-success`);
-      }
-      
       // Se há mudança de estado de conexão
        if (update.connection) {
          // Log removido para evitar spam - só loga mudanças importantes
@@ -889,17 +861,36 @@ export class WhatsAppInstance extends EventEmitter {
              this.updateStatus('connecting');
            }
          } else if (update.connection === 'open') {
-           Logger.info(`✅ Conexão estabelecida com sucesso via WebSocket para instância: ${this.config.id}`);
-           
-           // ✅ CORREÇÃO: Só atualiza para connected se não estiver já conectado
-           if (this.status !== 'connected') {
-             console.log(`✅ [WHATSAPP_INSTANCE] Conexão aberta - atualizando para connected`);
+           // ✅ CORREÇÃO: Só marca como connected se também tiver isNewLogin (pair-success real)
+           if (update.isNewLogin) {
+             Logger.info(`✅ Novo login detectado via connection.update para instância: ${this.config.id}`);
+             
+             // Limpa QR code e timer
+             this.qrCode = undefined;
+             this.qrCodeExpiresAt = undefined;
+             if (this.qrCodeTimer) {
+               clearTimeout(this.qrCodeTimer);
+               this.qrCodeTimer = undefined;
+             }
+             
+             // ✅ CORREÇÃO: Marca como conectado APENAS quando connection === 'open' && isNewLogin === true
              this.updateStatus('connected');
              this.lastSeen = new Date();
              this.startHeartbeat();
-             this.emit('connected', update);
+             
+             // Emite evento de conexão bem-sucedida
+             this.emit('connected', {
+               instanceId: this.config.id,
+               phoneNumber: this.phoneNumber || 'Desconhecido',
+               profileName: this.profileName || 'WhatsApp User',
+               isNewLogin: true
+             });
+             
+             Logger.info(`🎉 Instância ${this.config.id} conectada com sucesso após pair-success`);
            } else {
-             console.log(`⚠️ [WHATSAPP_INSTANCE] Já conectado, ignorando connection.update duplicado`);
+             // WebSocket aberto mas sem pair-success ainda - aguarda
+             Logger.info(`🔄 Conexão WebSocket aberta para instância: ${this.config.id} - aguardando pair-success`);
+             console.log(`🔄 [WHATSAPP_INSTANCE] WebSocket aberto, mas aguardando pair-success para marcar como connected`);
            }
          }
        }
@@ -1368,8 +1359,14 @@ export class WhatsAppInstance extends EventEmitter {
         this.qrCodeExpiresAt = undefined;
         this.cacheManager.clearQRCode(this.config.id);
         
-        // Atualiza status para disconnected para permitir nova geração
+        // ✅ CORREÇÃO: Atualiza status para disconnected quando QR expira
         this.updateStatus('disconnected');
+        
+        // Emite evento de QR expirado para o frontend
+        this.emit('qr_expired', {
+          instanceId: this.config.id,
+          message: 'QR Code expirado. Clique em "Gerar Novo QR" para tentar novamente.'
+        });
         
         // Desconecta WebSocket se ainda estiver conectado
         if (this.webSocket) {
@@ -1558,19 +1555,14 @@ export class WhatsAppInstance extends EventEmitter {
       // console.log(`🔍 [DEBUG] Update completo: ${JSON.stringify(update, null, 2)}`);
       
       if (update.connection === ConnectionState.open) {
-         // Debug logs removidos para evitar spam
-         // console.log(`🔍 [DEBUG] ATENÇÃO: Marcando instância como 'connected'!`);
-         // console.log(`🔍 [DEBUG] Stack trace da conexão:`, new Error().stack?.split('\n').slice(1, 8).join('\n'));
+         // ❌ CORREÇÃO: NÃO marcar como connected aqui!
+         // O ConnectionState.open é apenas a conexão WebSocket TCP/TLS pronta
+         // Isso acontece ANTES do <pair-success> real do servidor WhatsApp
+         Logger.info(`🔄 Conexão WebSocket aberta para instância: ${this.config.id} - aguardando pair-success`);
+         console.log(`🔄 [CONNECTION_EVENT_DETECTOR] WebSocket aberto, mas aguardando pair-success para marcar como connected`);
          
-         // ✅ CORREÇÃO: Só atualiza para connected se não estiver já conectado
-         if (this.status !== 'connected') {
-           this.updateStatus('connected');
-           this.lastSeen = new Date();
-           this.startHeartbeat();
-           this.emit('connected', update);
-         } else {
-           console.log(`⚠️ [CONNECTION_EVENT_DETECTOR] Já conectado, ignorando connection.update duplicado`);
-         }
+         // Status permanece como estava (connecting ou qr_code)
+         // Só será atualizado para 'connected' quando receber <pair-success> real
        } else if (update.connection === ConnectionState.close) {
          // Debug log removido para evitar spam
          // console.log(`🔍 [DEBUG] Marcando instância como 'disconnected'`);

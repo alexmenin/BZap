@@ -58,6 +58,22 @@ export class SessionManager {
   }
 
   /**
+   * Verifica se as credenciais são válidas e completas
+   */
+  private hasValidCredentials(creds?: AuthState['creds']): boolean {
+    if (!creds) return false;
+    
+    // Verifica se tem as chaves essenciais para uma conexão válida
+    return !!(
+      creds.noiseKey &&
+      creds.signedIdentityKey &&
+      creds.signedPreKey &&
+      creds.identityKey &&
+      creds.registrationId
+    );
+  }
+
+  /**
    * Obtém a instância singleton
    */
   public static getInstance(): SessionManager {
@@ -212,8 +228,8 @@ export class SessionManager {
           firstUnuploadedPreKeyId: serializedAuthState.creds?.firstUnuploadedPreKeyId || null,
           serverHasPreKeys: serializedAuthState.creds?.serverHasPreKeys || false,
           numberDevice: authState.phoneNumber || null,
-          status: authState.creds ? 'connected' : 'disconnected',
-          registered: !!authState.creds
+          status: this.hasValidCredentials(authState.creds) ? 'connected' : 'disconnected',
+          registered: this.hasValidCredentials(authState.creds)
         },
         create: {
           instanceId,
@@ -221,8 +237,8 @@ export class SessionManager {
           numberDevice: authState.phoneNumber || null,
           webhookUrl: null,
           events: ['messages', 'connection'],
-          status: authState.creds ? 'connected' : 'disconnected',
-          registered: !!authState.creds,
+          status: this.hasValidCredentials(authState.creds) ? 'connected' : 'disconnected',
+          registered: this.hasValidCredentials(authState.creds),
           noiseKeyPrivate: serializedAuthState.creds?.noiseKey || null,
           noiseKeyPublic: serializedAuthState.creds?.noiseKey || null,
           signedIdentityKeyPrivate: serializedAuthState.creds?.signedIdentityKey || null,
