@@ -135,6 +135,8 @@ export const uploadPreKeys = async (
   preKeys.forEach(({ keyId, keyPair }) => {
     preKeyData[keyId.toString()] = keyPair;
   });
+
+  // Removido comportamento de criar/rotacionar preKeyId=0 (fallback)
   
   await authState.keys.set({ 'pre-key': preKeyData });
   
