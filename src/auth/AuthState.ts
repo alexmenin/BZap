@@ -67,7 +67,8 @@ export class BufferJSON {
 
   static reviver(key: string, value: any): any {
     if (value && value.type === 'Buffer' && Array.isArray(value.data)) {
-      return new Uint8Array(value.data);
+      // ✅ CORREÇÃO: Retornar Buffer em vez de Uint8Array
+      return Buffer.from(value.data);
     }
     return value;
   }

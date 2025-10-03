@@ -42,14 +42,14 @@ export interface AuthCredentials {
 }
 
 export interface KeyPair {
-  private: Uint8Array;
-  public: Uint8Array;
+  private: Buffer;
+  public: Buffer;
 }
 
 export interface SignedKeyPair {
   keyPair: KeyPair;
   keyId: number;
-  signature: Uint8Array;
+  signature: Buffer;
 }
 
 export interface SessionData {
@@ -73,61 +73,104 @@ export class CredentialsManager {
    */
   public async loadCredentials(instanceId: string): Promise<AuthCredentials | null> {
     try {
-      const instance = await prisma.instance.findUnique({
+      const cred = await prisma.credential.findUnique({
         where: { instanceId }
       });
 
-      if (!instance) {
+      if (!cred) {
         Logger.debug(`🔍 Nenhuma credencial encontrada para: ${instanceId}`);
         return null;
       }
 
-      // Reconstrói as credenciais a partir dos campos individuais
-        const credentials: AuthCredentials = {
-          noiseKey: {
-            private: instance.noiseKeyPrivate || new Uint8Array(),
-            public: instance.noiseKeyPublic || new Uint8Array()
+      // Função helper para validar e criar Buffer de chave
+      const createKeyBuffer = (data: any, expectedSize: number, keyName: string): Buffer => {
+        if (!data) {
+          Logger.warn(`⚠️ ${keyName} não encontrada, criando buffer vazio`);
+          return Buffer.alloc(expectedSize);
+        }
+        
+        // Se já é Buffer, verifica tamanho
+        if (Buffer.isBuffer(data)) {
+          if (data.length !== expectedSize) {
+            Logger.warn(`⚠️ ${keyName} com tamanho incorreto: ${data.length} bytes (esperado: ${expectedSize})`);
+          }
+          return data;
+        }
+        
+        // Se é Uint8Array, converte para Buffer
+        if (data instanceof Uint8Array) {
+          const buffer = Buffer.from(data);
+          if (buffer.length !== expectedSize) {
+            Logger.warn(`⚠️ ${keyName} com tamanho incorreto após conversão: ${buffer.length} bytes (esperado: ${expectedSize})`);
+          }
+          return buffer;
+        }
+        
+        // Se é string base64, converte para Buffer
+        try {
+          const buffer = Buffer.from(data.toString(), 'base64');
+          if (buffer.length !== expectedSize) {
+            Logger.warn(`⚠️ ${keyName} com tamanho incorreto após conversão: ${buffer.length} bytes (esperado: ${expectedSize})`);
+          }
+          return buffer;
+        } catch (error) {
+          Logger.error(`❌ Erro ao converter ${keyName} de base64:`, error);
+          return Buffer.alloc(expectedSize);
+        }
+      };
+
+      // Helpers para parse de JSON armazenado em credentials
+      const parseKeyPair = (jsonStr: string | null | undefined, keyName: string) => {
+        try {
+          if (!jsonStr) return { private: Buffer.alloc(32), public: Buffer.alloc(32) };
+          const obj = JSON.parse(jsonStr);
+          return {
+            private: createKeyBuffer(obj?.private, 32, `${keyName}.private`),
+            public: createKeyBuffer(obj?.public, 32, `${keyName}.public`)
+          };
+        } catch (e) {
+          Logger.warn(`⚠️ Erro ao parsear ${keyName} de credentials:`, e);
+          return { private: Buffer.alloc(32), public: Buffer.alloc(32) };
+        }
+      };
+
+      const noiseKeyPair = parseKeyPair(cred.noiseKey, 'noiseKey');
+      const identityKeyPair = parseKeyPair(cred.identityKey, 'identityKey');
+
+      // Reconstrói as credenciais com validação de tamanho a partir da tabela 'credentials'
+      const credentials: AuthCredentials = {
+        noiseKey: noiseKeyPair,
+        pairingEphemeralKeyPair: {
+          // Campos não persistidos no novo schema; inicializa com buffers vazios
+          private: Buffer.alloc(32),
+          public: Buffer.alloc(32)
+        },
+        signedIdentityKey: identityKeyPair,
+        identityKey: identityKeyPair,
+        signedPreKey: {
+          keyId: cred.signedPreKeyId || 0,
+          keyPair: {
+            private: createKeyBuffer(cred.signedPreKeyPriv, 32, 'signedPreKey.private'),
+            public: createKeyBuffer(cred.signedPreKeyPub, 32, 'signedPreKey.public')
           },
-          pairingEphemeralKeyPair: {
-            private: instance.pairingEphemeralKeyPrivate || new Uint8Array(),
-            public: instance.pairingEphemeralKeyPublic || new Uint8Array()
-          },
-          signedIdentityKey: {
-            private: instance.signedIdentityKeyPrivate || new Uint8Array(),
-            public: instance.signedIdentityKeyPublic || new Uint8Array()
-          },
-          identityKey: {
-            private: instance.signedIdentityKeyPrivate || new Uint8Array(),
-            public: instance.signedIdentityKeyPublic || new Uint8Array()
-          },
-          signedPreKey: {
-            keyId: instance.signedPreKeyId || 0,
-            keyPair: {
-              private: instance.signedPreKeyPrivate || new Uint8Array(),
-              public: instance.signedPreKeyPublic || new Uint8Array()
-            },
-            signature: instance.signedPreKeySignature || new Uint8Array()
-          },
-          registrationId: instance.registrationId || 0,
-          advSecretKey: instance.advSecretKey || '',
-          nextPreKeyId: instance.nextPreKeyId,
-          firstUnuploadedPreKeyId: instance.firstUnuploadedPreKeyId,
-          processedHistoryMessages: (instance.processedHistoryMessages as any[]) || [],
-          accountSyncCounter: instance.accountSyncCounter,
-          accountSettings: (instance.accountSettings as { unarchiveChats: boolean }) || { unarchiveChats: false },
-          registered: instance.registered,
-          pairingCode: instance.pairingCode || undefined,
-          lastPropHash: instance.lastPropHash || undefined,
-          routingInfo: instance.routingInfo ? Buffer.from(instance.routingInfo) : undefined,
-          me: instance.userId ? {
-            id: instance.userId,
-            name: instance.userName || undefined,
-            lid: instance.userLid || undefined
-          } : undefined,
-          signalIdentities: (instance.signalIdentities as any) || [],
-          myAppStateKeyId: instance.myAppStateKeyId || undefined,
-          platform: instance.platform || undefined
-        };
+          signature: createKeyBuffer(cred.signedPreKeySig, 64, 'signedPreKey.signature')
+        },
+        registrationId: cred.registrationId || 0,
+        advSecretKey: cred.advSecretKey || '',
+        nextPreKeyId: 1,
+        firstUnuploadedPreKeyId: 1,
+        processedHistoryMessages: [],
+        accountSyncCounter: 0,
+        accountSettings: { unarchiveChats: false },
+        registered: !!cred.signedPreKeyId,
+        pairingCode: undefined,
+        lastPropHash: undefined,
+        routingInfo: undefined,
+        me: undefined,
+        signalIdentities: [],
+        myAppStateKeyId: undefined,
+        platform: undefined
+      };
 
       Logger.debug(`✅ Credenciais carregadas do banco para: ${instanceId}`);
       return credentials;
@@ -142,7 +185,7 @@ export class CredentialsManager {
    */
   public async createCredentials(instanceId: string): Promise<AuthCredentials> {
     this.authStateManager = new AuthStateManager(instanceId);
-    const { state } = await this.authStateManager.useMultiFileAuthState();
+    const { state } = await this.authStateManager.useMultiFileAuthState(instanceId);
     
     // Converte credenciais do Baileys para formato interno se necessário
     const credentials = this.convertBaileysCredsToInternal(state.creds);
@@ -163,7 +206,7 @@ export class CredentialsManager {
     if (!this.authStateManager || this.authStateManager['instanceId'] !== instanceId) {
       this.authStateManager = new AuthStateManager(instanceId);
     }
-    return await this.authStateManager.useMultiFileAuthState();
+    return await this.authStateManager.useMultiFileAuthState(instanceId);
   }
 
   /**
@@ -248,7 +291,7 @@ export class CredentialsManager {
     return {
       keyId,
       keyPair: preKey,
-      signature
+      signature: Buffer.from(signature)
     };
   }
 
@@ -257,75 +300,51 @@ export class CredentialsManager {
    */
   public async saveCredentials(instanceId: string, credentials: AuthCredentials): Promise<void> {
     try {
-      await prisma.instance.upsert({
+      // Novo schema: salva credenciais na tabela 'credentials'
+      const noiseKeyStr = JSON.stringify({
+        private: Buffer.from(credentials.noiseKey.private).toString('base64'),
+        public: Buffer.from(credentials.noiseKey.public).toString('base64')
+      });
+      const identityKeyStr = JSON.stringify({
+        private: Buffer.from(credentials.signedIdentityKey.private).toString('base64'),
+        public: Buffer.from(credentials.signedIdentityKey.public).toString('base64')
+      });
+
+      await prisma.credential.upsert({
         where: { instanceId },
         update: {
-          noiseKeyPrivate: Buffer.from(credentials.noiseKey.private),
-          noiseKeyPublic: Buffer.from(credentials.noiseKey.public),
-          pairingEphemeralKeyPrivate: Buffer.from(credentials.pairingEphemeralKeyPair.private),
-          pairingEphemeralKeyPublic: Buffer.from(credentials.pairingEphemeralKeyPair.public),
-          signedIdentityKeyPrivate: Buffer.from(credentials.signedIdentityKey.private),
-          signedIdentityKeyPublic: Buffer.from(credentials.signedIdentityKey.public),
-          signedPreKeyId: credentials.signedPreKey.keyId,
-          signedPreKeyPrivate: Buffer.from(credentials.signedPreKey.keyPair.private),
-          signedPreKeyPublic: Buffer.from(credentials.signedPreKey.keyPair.public),
-          signedPreKeySignature: Buffer.from(credentials.signedPreKey.signature),
           registrationId: credentials.registrationId,
-          advSecretKey: credentials.advSecretKey,
-          nextPreKeyId: credentials.nextPreKeyId,
-          firstUnuploadedPreKeyId: credentials.firstUnuploadedPreKeyId,
-          processedHistoryMessages: credentials.processedHistoryMessages,
-          accountSyncCounter: credentials.accountSyncCounter,
-          accountSettings: credentials.accountSettings,
-          registered: credentials.registered,
-          pairingCode: credentials.pairingCode || null,
-          lastPropHash: credentials.lastPropHash || null,
-          routingInfo: credentials.routingInfo ? Buffer.from(credentials.routingInfo) : null,
-          userId: credentials.me?.id || null,
-          userName: credentials.me?.name || null,
-          userLid: credentials.me?.lid || null,
-          signalIdentities: credentials.signalIdentities || [],
-          myAppStateKeyId: credentials.myAppStateKeyId || null,
-          platform: credentials.platform || null,
-          status: 'disconnected', // Status sempre inicia como disconnected, será atualizado quando conectar
-          numberDevice: credentials.me?.id ? credentials.me.id.split(':')[0] : null, // Extrai apenas a parte numérica
+          noiseKey: noiseKeyStr,
+          identityKey: identityKeyStr,
+          advSecretKey: credentials.advSecretKey || null,
+          signedPreKeyId: credentials.signedPreKey?.keyId ?? null,
+          signedPreKeyPub: credentials.signedPreKey?.keyPair?.public
+            ? Buffer.from(credentials.signedPreKey.keyPair.public).toString('base64')
+            : null,
+          signedPreKeyPriv: credentials.signedPreKey?.keyPair?.private
+            ? Buffer.from(credentials.signedPreKey.keyPair.private).toString('base64')
+            : null,
+          signedPreKeySig: credentials.signedPreKey?.signature
+            ? Buffer.from(credentials.signedPreKey.signature).toString('base64')
+            : null,
           updatedAt: new Date()
         },
         create: {
           instanceId,
-          noiseKeyPrivate: Buffer.from(credentials.noiseKey.private),
-          noiseKeyPublic: Buffer.from(credentials.noiseKey.public),
-          pairingEphemeralKeyPrivate: Buffer.from(credentials.pairingEphemeralKeyPair.private),
-          pairingEphemeralKeyPublic: Buffer.from(credentials.pairingEphemeralKeyPair.public),
-          signedIdentityKeyPrivate: Buffer.from(credentials.signedIdentityKey.private),
-          signedIdentityKeyPublic: Buffer.from(credentials.signedIdentityKey.public),
-          signedPreKeyId: credentials.signedPreKey.keyId,
-          signedPreKeyPrivate: Buffer.from(credentials.signedPreKey.keyPair.private),
-          signedPreKeyPublic: Buffer.from(credentials.signedPreKey.keyPair.public),
-          signedPreKeySignature: Buffer.from(credentials.signedPreKey.signature),
           registrationId: credentials.registrationId,
-          advSecretKey: credentials.advSecretKey,
-          nextPreKeyId: credentials.nextPreKeyId,
-          firstUnuploadedPreKeyId: credentials.firstUnuploadedPreKeyId,
-          processedHistoryMessages: credentials.processedHistoryMessages,
-          accountSyncCounter: credentials.accountSyncCounter,
-          accountSettings: credentials.accountSettings,
-          registered: credentials.registered,
-          pairingCode: credentials.pairingCode || null,
-          lastPropHash: credentials.lastPropHash || null,
-          routingInfo: credentials.routingInfo ? Buffer.from(credentials.routingInfo) : null,
-          userId: credentials.me?.id || null,
-          userName: credentials.me?.name || null,
-          userLid: credentials.me?.lid || null,
-          signalIdentities: credentials.signalIdentities || [],
-          myAppStateKeyId: credentials.myAppStateKeyId || null,
-          platform: credentials.platform || null,
-          status: 'disconnected', // Status sempre inicia como disconnected, será atualizado quando conectar
-          nameDevice: `BZap-${instanceId}`,
-          numberDevice: credentials.me?.id ? credentials.me.id.split(':')[0] : null, // Extrai apenas a parte numérica
-          webhookUrl: null,
-          events: ['messages', 'connection'],
-          createdAt: new Date(),
+          noiseKey: noiseKeyStr,
+          identityKey: identityKeyStr,
+          advSecretKey: credentials.advSecretKey || null,
+          signedPreKeyId: credentials.signedPreKey?.keyId ?? null,
+          signedPreKeyPub: credentials.signedPreKey?.keyPair?.public
+            ? Buffer.from(credentials.signedPreKey.keyPair.public).toString('base64')
+            : null,
+          signedPreKeyPriv: credentials.signedPreKey?.keyPair?.private
+            ? Buffer.from(credentials.signedPreKey.keyPair.private).toString('base64')
+            : null,
+          signedPreKeySig: credentials.signedPreKey?.signature
+            ? Buffer.from(credentials.signedPreKey.signature).toString('base64')
+            : null,
           updatedAt: new Date()
         }
       });
@@ -377,7 +396,7 @@ export class CredentialsManager {
         prisma.preKey.deleteMany({ where: { instanceId } }),
         prisma.session.deleteMany({ where: { instanceId } }),
         prisma.senderKey.deleteMany({ where: { instanceId } }),
-        prisma.appStateSyncKey.deleteMany({ where: { instanceId } }),
+        prisma.appStateKey.deleteMany({ where: { instanceId } }),
         prisma.appStateVersion.deleteMany({ where: { instanceId } }),
         prisma.instance.delete({ where: { instanceId } })
       ]);
@@ -391,38 +410,31 @@ export class CredentialsManager {
   /**
    * Verifica se existe sessão no banco
    */
-  public async hasSession(instanceId: string): Promise<boolean> {
+   public async hasSession(instanceId: string): Promise<boolean> {
      try {
-       const instance = await prisma.instance.findUnique({
+       // Novo schema: verificação baseada em credentials
+       const cred = await prisma.credential.findUnique({
          where: { instanceId }
        });
-       
-       if (!instance) {
+
+       if (!cred) {
+         Logger.debug(`🔍 Instância ${instanceId} não possui registro em credentials`);
          return false;
        }
-       
-       // ✅ CORREÇÃO: Verifica se as credenciais são realmente válidas
-       // Não basta apenas existir no banco, precisa ter dados completos de autenticação
-       
+
        // Verifica se tem chaves básicas
-       if (!instance.noiseKeyPrivate || !instance.signedIdentityKeyPrivate) {
-         Logger.debug(`🔍 Instância ${instanceId} existe mas não tem chaves básicas`);
+       if (!cred.noiseKey || !cred.identityKey) {
+         Logger.debug(`🔍 Instância ${instanceId} possui credentials incompletas (noiseKey/identityKey ausentes)`);
          return false;
        }
-       
-       // Verifica se está registrado e tem informações de usuário
-       if (!instance.registered || !instance.userId) {
-         Logger.debug(`🔍 Instância ${instanceId} existe mas não está registrada ou não tem userId`);
-         return false;
+
+       // Verifica se existe SignedPreKey configurada (opcional, mas recomendado após pareamento)
+       if (!cred.signedPreKeyId || !cred.signedPreKeyPriv || !cred.signedPreKeyPub || !cred.signedPreKeySig) {
+         Logger.debug(`🔍 Instância ${instanceId} ainda não possui SignedPreKey ativa completa`);
+         // não retornamos false, pode estar em processo de configuração
        }
-       
-       // Verifica se tem platform (obrigatório após pair-success)
-       if (!instance.platform) {
-         Logger.debug(`🔍 Instância ${instanceId} existe mas não tem platform definido`);
-         return false;
-       }
-       
-       Logger.debug(`✅ Instância ${instanceId} tem sessão válida`);
+
+       Logger.debug(`✅ Instância ${instanceId} possui credentials válidas`);
        return true;
      } catch (error) {
        Logger.error(`❌ Erro ao verificar sessão para ${instanceId}:`, error);
@@ -492,19 +504,49 @@ export class CredentialsManager {
    * Deserializa credenciais do armazenamento
    */
   private deserializeCredentials(data: any): AuthCredentials {
-    const parseKeyPair = (obj: any): KeyPair => ({
-      private: Buffer.from(obj.private, 'base64'),
-      public: Buffer.from(obj.public, 'base64')
-    });
+    const parseKeyPair = (obj: any): KeyPair => {
+      const privateKey = Buffer.from(obj.private, 'base64');
+      const publicKey = Buffer.from(obj.public, 'base64');
+      
+      // Validação de tamanho das chaves (32 bytes para Curve25519)
+      if (privateKey.length !== 32) {
+        Logger.warn(`⚠️ Chave privada com tamanho incorreto: ${privateKey.length} bytes (esperado: 32)`);
+      }
+      if (publicKey.length !== 32) {
+        Logger.warn(`⚠️ Chave pública com tamanho incorreto: ${publicKey.length} bytes (esperado: 32)`);
+      }
+      
+      return {
+        private: privateKey,
+        public: publicKey
+      };
+    };
 
-    const parseSignedPreKey = (obj: any): SignedKeyPair => ({
-      keyId: obj.keyId,
-      keyPair: {
-        private: Buffer.from(obj.private, 'base64'),
-        public: Buffer.from(obj.public, 'base64')
-      },
-      signature: Buffer.from(obj.signature, 'base64')
-    });
+    const parseSignedPreKey = (obj: any): SignedKeyPair => {
+      const privateKey = Buffer.from(obj.private, 'base64');
+      const publicKey = Buffer.from(obj.public, 'base64');
+      const signature = Buffer.from(obj.signature, 'base64');
+      
+      // Validação de tamanho das chaves
+      if (privateKey.length !== 32) {
+        Logger.warn(`⚠️ SignedPreKey privada com tamanho incorreto: ${privateKey.length} bytes (esperado: 32)`);
+      }
+      if (publicKey.length !== 32) {
+        Logger.warn(`⚠️ SignedPreKey pública com tamanho incorreto: ${publicKey.length} bytes (esperado: 32)`);
+      }
+      if (signature.length !== 64) {
+        Logger.warn(`⚠️ Assinatura com tamanho incorreto: ${signature.length} bytes (esperado: 64)`);
+      }
+      
+      return {
+        keyId: obj.keyId,
+        keyPair: {
+          private: privateKey,
+          public: publicKey
+        },
+        signature: signature
+      };
+    };
 
     return {
       clientId: data.clientId || undefined,
@@ -586,7 +628,6 @@ export class CredentialsManager {
         where: { instanceId },
         select: {
           instanceId: true,
-          registered: true,
           status: true,
           nameDevice: true,
           numberDevice: true,

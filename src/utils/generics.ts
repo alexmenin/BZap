@@ -1,4 +1,4 @@
-// generics.ts - Utilitários genéricos baseados no Baileys-master
+// generics.ts - Utilitários genéricos
 
 import { Boom } from '@hapi/boom';
 import { randomBytes } from 'crypto';
@@ -20,11 +20,11 @@ const PLATFORM_MAP = {
   netbsd: undefined
 };
 
-// Tipos de navegadores baseados no Baileys
+// Tipos de navegadores
 export const Browsers = {
   ubuntu: (browser: string) => ['Ubuntu', browser, '22.04.4'],
   macOS: (browser: string) => ['Mac OS', browser, '14.4.1'],
-  baileys: (browser: string) => ['Baileys', browser, '6.5.0'],
+  referenceClient: (browser: string) => ['ReferenceClient', browser, '6.5.0'],
   windows: (browser: string) => ['Windows', browser, '10.0.22631'],
   appropriate: (browser: string) => [PLATFORM_MAP[platform() as keyof typeof PLATFORM_MAP] || 'Ubuntu', browser, release()]
 };

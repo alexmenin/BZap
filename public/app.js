@@ -49,9 +49,111 @@ class WhatsAppManager {
             console.error('❌ Erro de conexão WebSocket:', error);
         });
 
+        // Listener principal para mensagens WebSocket
+        this.socket.on('message', (event) => {
+            console.log('📨 Mensagem WebSocket recebida:', event);
+            
+            let data;
+            try {
+                // Se event já é um objeto, usa diretamente
+                if (typeof event === 'object' && event !== null) {
+                    data = event;
+                } else if (typeof event === 'string') {
+                    // Se é string, tenta fazer parse
+                    data = JSON.parse(event);
+                } else if (event.data) {
+                    // Se tem propriedade data, tenta fazer parse dela
+                    data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                } else {
+                    console.warn('⚠️ Formato de evento desconhecido:', event);
+                    return;
+                }
+            } catch (err) {
+                console.error('❌ Erro ao parsear evento WebSocket:', event, err);
+                return;
+            }
+
+            console.log('🔍 Dados parseados do WebSocket:', data);
+
+            // Processar QR code
+            if (data.type === 'qr' && data.qr) {
+                console.log('🎯 QR code detectado via message event:', data.qr.substring(0, 50) + '...');
+                
+                const container = document.getElementById('qrCodeContainer');
+                if (container) {
+                    container.innerHTML = ''; // limpar QR anterior
+                    
+                    try {
+                        QrCreator.render({ 
+                            text: data.qr, 
+                            size: 256,
+                            radius: 0,
+                            ecLevel: 'L',
+                            fill: '#000000',
+                            background: '#FFFFFF'
+                        }, container);
+                        
+                        console.log('✅ QR Code renderizado via message event');
+                        
+                        // Exibir modal
+                        const modal = document.getElementById('qrModal');
+                        if (modal && !modal.classList.contains('show')) {
+                            modal.classList.add('show');
+                            document.body.style.overflow = 'hidden';
+                        }
+                        
+                        // Atualizar nome da instância se disponível
+                        if (data.instanceName) {
+                            const instanceNameEl = document.getElementById('qrInstanceName');
+                            if (instanceNameEl) {
+                                instanceNameEl.textContent = data.instanceName;
+                            }
+                        }
+                        
+                        this.updateQrModalStatus('📱 Escaneie o QR Code com seu WhatsApp', 'qr_code');
+                        
+                    } catch (error) {
+                        console.error('❌ Erro ao renderizar QR code via message event:', error);
+                        container.innerHTML = `
+                            <div class="empty-state">
+                                <i class="fas fa-exclamation-triangle"></i>
+                                <p>Erro ao gerar QR Code</p>
+                                <p class="text-muted">${error.message}</p>
+                            </div>
+                        `;
+                    }
+                }
+            }
+
+            // Processar status de conexão
+            if (data.type === 'status') {
+                console.log('📊 Status update via message event:', data.status);
+                const statusEl = document.getElementById('connectionStatus');
+                if (statusEl) {
+                    statusEl.textContent = data.status;
+                }
+                
+                if (data.instanceId) {
+                    this.updateInstanceStatus(data.status, data.instanceId);
+                }
+            }
+
+            // Processar connection.update
+            if (data.type === 'connection.update' || (data.connection && data.update)) {
+                console.log('🔄 Connection update via message event:', data);
+                this.handleConnectionUpdate(data);
+            }
+        });
+
         this.socket.on('instance_status_update', (data) => {
             console.log('📊 Status da instância atualizado via WebSocket:', data);
             this.handleInstanceStatusUpdate(data);
+            
+            // ✅ CORREÇÃO: Processar connection.update dentro do instance_status_update
+            if (data.data && data.data.connection) {
+                console.log('🔄 Connection update detectado:', data.data);
+                this.handleConnectionUpdate(data);
+            }
         });
 
         this.socket.on('qr_code_generated', (data) => {
@@ -83,6 +185,11 @@ class WhatsAppManager {
             }
         });
 
+        this.socket.on('connection_update', (data) => {
+            console.log('🔄 Connection update recebido via WebSocket:', data);
+            this.handleConnectionUpdate(data);
+        });
+
         this.socket.on('error', (error) => {
             console.error('❌ Erro no WebSocket:', error);
         });
@@ -90,8 +197,17 @@ class WhatsAppManager {
 
     // Handler para atualização de status da instância
     handleInstanceStatusUpdate(data) {
+        console.log('🔍 [DEBUG] handleInstanceStatusUpdate recebido:', data);
+        
         if (this.currentQrInstance && this.currentQrInstance.id === data.instanceId) {
             const status = data.status;
+            console.log('🔍 [DEBUG] Status da instância atual:', status);
+            
+            // Processar connection.update se presente
+            if (data.data && data.data.connection) {
+                console.log('🔄 Connection update detectado no status update:', data.data);
+                this.handleConnectionUpdate(data);
+            }
             
             // Verifica se a instância já está conectada para evitar processar QR codes desnecessários
             const currentInstanceStatus = this.getCurrentInstanceStatus(data.instanceId);
@@ -162,6 +278,42 @@ class WhatsAppManager {
             this.updateQrModalStatus('❌ Desconectado', 'disconnected');
         }
         this.updateInstanceStatus('disconnected', data.instanceId);
+    }
+
+    // ✅ NOVO: Handler para connection.update
+    handleConnectionUpdate(data) {
+        console.log('🔄 Processando connection.update:', data);
+        console.log('🔍 [DEBUG] handleConnectionUpdate chamado:', data);
+        
+        const { instanceId, data: connectionData } = data;
+        
+        // Verifica se há QR code no connection.update
+        if (connectionData && connectionData.qr) {
+            console.log('📱 QR code encontrado no connection.update:', connectionData.qr.substring(0, 50) + '...');
+            
+            // Renderiza o QR code se estivermos na instância correta
+            if (this.currentQrInstance && this.currentQrInstance.id === instanceId) {
+                console.log('🔍 [DEBUG] Connection update para instância atual');
+                this.updateQRCodeDisplay(connectionData.qr);
+            }
+        }
+        
+        // Atualiza status da conexão
+        if (connectionData && connectionData.connection) {
+            const status = connectionData.connection;
+            console.log(`📊 Atualizando status da conexão para: ${status}`);
+            console.log('🔍 [DEBUG] Status de conexão:', status);
+            
+            if (status === 'connected' || status === 'open') {
+                console.log('✅ Conexão estabelecida!');
+                this.handleSuccessfulConnection(instanceId);
+            } else if (status === 'connecting') {
+                this.updateInstanceStatus('connecting', instanceId);
+            } else if (status === 'close') {
+                console.log('❌ Conexão fechada');
+                this.updateInstanceStatus('disconnected', instanceId);
+            }
+        }
     }
 
     // Função para se inscrever em eventos de uma instância
@@ -242,63 +394,77 @@ class WhatsAppManager {
             this.currentQrData = qrCodeText;
 
             const qrContainer = document.getElementById('qrCodeContainer');
-            if (!qrContainer) return;
+            if (!qrContainer) {
+                console.error('❌ Container qrCodeContainer não encontrado');
+                return;
+            }
 
-            // Limpar container
+            // Limpar container anterior
             qrContainer.innerHTML = '';
             
-            // Gerar QR Code visual
-            const canvas = document.createElement('canvas');
+            // Garantir que o modal seja exibido
+            const modal = document.getElementById('qrModal');
+            if (modal && !modal.classList.contains('show')) {
+                modal.classList.add('show');
+                document.body.style.overflow = 'hidden';
+                console.log('✅ Modal QR exibido');
+            }
             
+            // Gerar QR Code visual usando QrCreator
             try {
                 QrCreator.render({
                     text: qrCodeText,
+                    size: 256,
                     radius: 0,
                     ecLevel: 'L',
                     fill: '#000000',
-                    background: '#FFFFFF',
-                    size: 300
-                }, canvas);
-                console.log('✅ QR Code gerado com sucesso via WebSocket');
+                    background: '#FFFFFF'
+                }, qrContainer);
+                
+                console.log('✅ QR Code renderizado com sucesso via QrCreator');
+                
+                // Mostrar informações do QR code
+                const infoContainer = document.createElement('div');
+                infoContainer.className = 'qr-info';
+                infoContainer.style.textAlign = 'center';
+                infoContainer.style.marginTop = '15px';
+                
+                const wsText = document.createElement('p');
+                wsText.className = 'text-success';
+                wsText.innerHTML = '<i class="fas fa-wifi"></i> QR Code atualizado via WebSocket';
+                infoContainer.appendChild(wsText);
+                
+                qrContainer.appendChild(infoContainer);
+                
+                // Atualizar status do modal
+                this.updateQrModalStatus('Escaneie o QR Code com seu WhatsApp', 'qr_code');
+                
+                console.log('✅ QR code atualizado com sucesso via WebSocket');
+                
             } catch (error) {
-                // Fallback: tentar com configurações alternativas
-                console.warn('⚠️ Erro com ecLevel L, tentando com ecLevel M:', error.message);
-                try {
-                    QrCreator.render({
-                        text: qrCodeText,
-                        radius: 0,
-                        ecLevel: 'M',
-                        fill: '#000000',
-                        background: '#FFFFFF',
-                        size: 256
-                    }, canvas);
-                    console.log('✅ QR Code gerado com sucesso (ecLevel M) via WebSocket');
-                } catch (fallbackError) {
-                    console.error('❌ Erro ao gerar QR code mesmo com fallback:', fallbackError);
-                    qrContainer.innerHTML = '<div class="empty-state"><i class="fas fa-exclamation-triangle"></i><p>Erro ao gerar QR Code</p></div>';
-                    return;
-                }
+                console.error('❌ Erro ao renderizar QR code com QrCreator:', error);
+                
+                // Fallback: mostrar mensagem de erro
+                qrContainer.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Erro ao gerar QR Code</p>
+                        <p class="text-muted">${error.message}</p>
+                    </div>
+                `;
             }
             
-            qrContainer.appendChild(canvas);
-            
-            // Mostrar informações do QR code
-            const infoContainer = document.createElement('div');
-            infoContainer.className = 'qr-info';
-            infoContainer.style.textAlign = 'center';
-            infoContainer.style.marginTop = '15px';
-            
-            const wsText = document.createElement('p');
-            wsText.className = 'text-success';
-            wsText.innerHTML = '<i class="fas fa-wifi"></i> QR Code atualizado via WebSocket';
-            infoContainer.appendChild(wsText);
-            
-            qrContainer.appendChild(infoContainer);
-            
-            console.log('✅ QR code atualizado com sucesso via WebSocket');
-
         } catch (error) {
-            console.error('❌ Erro ao atualizar QR code:', error);
+            console.error('❌ Erro geral no updateQRCodeDisplay:', error);
+            const qrContainer = document.getElementById('qrCodeContainer');
+            if (qrContainer) {
+                qrContainer.innerHTML = `
+                    <div class="empty-state">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <p>Erro ao processar QR Code</p>
+                    </div>
+                `;
+            }
         }
     }
 
@@ -418,6 +584,16 @@ class WhatsAppManager {
 
             if (response.ok) {
                 this.instances = result.data || [];
+                
+                // ✅ CORREÇÃO: Força atualização do status real de cada instância via WebSocket
+                console.log('🔄 Solicitando status atualizado para todas as instâncias...');
+                this.instances.forEach(instance => {
+                    if (this.socket && this.socket.connected) {
+                        console.log(`📊 Solicitando status para instância: ${instance.id}`);
+                        this.requestInstanceStatus(instance.id);
+                    }
+                });
+                
                 this.renderInstances();
             } else {
                 throw new Error(result.message || 'Erro ao carregar instâncias');
@@ -1028,7 +1204,8 @@ class WhatsAppManager {
         const statusMap = {
             'connected': 'status-connected',
             'disconnected': 'status-disconnected',
-            'connecting': 'status-connecting'
+            'connecting': 'status-connecting',
+            'qr_code': 'status-connecting' // ✅ CORREÇÃO: Adicionado suporte para qr_code
         };
         return statusMap[status] || 'status-disconnected';
     }
@@ -1037,7 +1214,8 @@ class WhatsAppManager {
         const statusMap = {
             'connected': 'Conectado',
             'disconnected': 'Desconectado',
-            'connecting': 'Conectando'
+            'connecting': 'Conectando',
+            'qr_code': 'QR Code Ativo' // ✅ CORREÇÃO: Adicionado suporte para qr_code
         };
         return statusMap[status] || 'Desconhecido';
     }

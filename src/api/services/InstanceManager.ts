@@ -41,6 +41,7 @@ export interface InstanceData {
   phoneNumber?: string;
   profileName?: string;
   settings: InstanceConfig['settings'];
+  config?: InstanceConfig; // Adicionando config opcional
 }
 
 /**
@@ -49,6 +50,7 @@ export interface InstanceData {
 export interface OperationResult {
   success: boolean;
   error?: string;
+  message?: string; // Adicionando message opcional
   code?: string;
   status?: string;
   qrCode?: string;
@@ -204,9 +206,14 @@ export class InstanceManager extends EventEmitter {
       const result = await instance.connect();
       console.log('🔍 [INSTANCE_MANAGER] Resultado do connect:', result);
       
-      if (result.success) {
+      // ✅ CORREÇÃO: Só emite 'instance:connected' quando status for realmente 'connected'
+      // Não emite quando status for 'connecting' ou 'qr_code' - esses eventos vêm dos listeners
+      if (result.success && result.status === 'connected') {
         Logger.info(`✅ Instância conectada: ${data.name} (ID: ${instanceId})`);
         this.emit('instance:connected', instanceId, result);
+      } else if (result.success) {
+        Logger.info(`🔌 Instância iniciando conexão: ${data.name} (ID: ${instanceId}) - Status: ${result.status}`);
+        // Não emite 'connected' - aguarda eventos do WhatsAppInstance
       }
       
       return result;
@@ -490,7 +497,9 @@ export class InstanceManager extends EventEmitter {
       
       if (data.qrCodeExpiresAt && now > data.qrCodeExpiresAt) {
         Logger.info(`🧹 Limpando QR code expirado da instância: ${instanceId}`);
-        await instance.clearExpiredQRCode();
+        // Método clearExpiredQRCode foi removido na simplificação
+        // O ciclo de QR agora é gerenciado automaticamente pelo WhatsAppInstance
+        Logger.debug(`QR code da instância ${instanceId} será renovado automaticamente pelo ciclo`);
       }
     }
   }

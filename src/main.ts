@@ -4,7 +4,6 @@ import { Logger, LogLevel } from './utils/Logger';
 import { InstanceManager } from './api/services/InstanceManager';
 import { WhatsAppInstance } from './api/services/WhatsAppInstance';
 import { SessionManager } from './api/services/SessionManager';
-import { EventHandlers } from './events/EventHandlers';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import { EventEmitter } from 'events';
@@ -32,7 +31,6 @@ interface MultiInstanceConfig {
 class MultiInstanceController extends EventEmitter {
   private instanceManager: InstanceManager;
   private sessionManager: SessionManager;
-  private eventHandlers: EventHandlers;
   private config: MultiInstanceConfig;
   private instances: Map<string, any> = new Map(); // Usando tipo genérico por compatibilidade
   private healthCheckTimer?: NodeJS.Timeout;
@@ -73,7 +71,6 @@ class MultiInstanceController extends EventEmitter {
     // Inicializa gerenciadores principais
     this.instanceManager = InstanceManager.getInstance();
     this.sessionManager = SessionManager.getInstance();
-    this.eventHandlers = EventHandlers.getInstance();
 
     this.setupControllerEvents();
     

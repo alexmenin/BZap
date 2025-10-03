@@ -3,6 +3,7 @@
 import { Logger } from '../../utils/Logger';
 import { InstanceConfig } from './InstanceManager';
 import { prisma } from '../../database/PrismaClient';
+import { BufferJSON } from '../../utils/BufferJSON';
 
 /**
  * Interface para estado de autenticação
@@ -100,13 +101,13 @@ export class SessionManager {
           webhookUrl: config.webhookUrl || null
         },
         create: {
+          id: instanceId,
           instanceId,
           nameDevice: config.name || `BZap-${instanceId}`,
           numberDevice: null,
           webhookUrl: config.webhookUrl || null,
           events: ['messages', 'connection'],
-          status: 'disconnected',
-          registered: false
+          status: 'disconnected'
         }
       });
       
@@ -206,50 +207,47 @@ export class SessionManager {
         lastAccess: new Date()
       };
       
-      // Serializa o estado de autenticação
+      // Cria o objeto completo no formato JSON solicitado
+      const completeSessionData = {
+        creds: authState.creds || {},
+        keys: {
+          preKeys: authState.keys?.preKeys || {},
+          sessions: authState.keys?.sessions || {},
+          senderKeys: authState.keys?.senderKeys || {},
+          appStateSyncKeys: authState.keys?.appStateSyncKeys || {},
+          appStateVersions: authState.keys?.appStateVersions || {}
+        },
+        deviceId: authState.deviceId,
+        phoneNumber: authState.phoneNumber,
+        profileName: authState.profileName,
+        platform: authState.platform,
+        lastAccountSyncTimestamp: authState.lastAccountSyncTimestamp
+      };
+      
+      // Serializa credenciais individuais para campos específicos (compatibilidade)
       const serializedAuthState = this.serializeAuthState(authState);
       
-      // Salva as chaves separadamente no banco
+      // Salva as chaves separadamente no banco (mantém estrutura existente)
       await this.saveKeysToDatabase(instanceId, authState.keys || {});
+
+      // Removido: persistência legada de JSON em sessions (schema atualizado usa registros binários por jid+device)
       
-      // Atualiza a instância com as credenciais
+      // Atualiza a instância apenas com as credenciais (sem sessionData)
       await prisma.instance.upsert({
         where: { instanceId },
         update: {
-          noiseKeyPrivate: serializedAuthState.creds?.noiseKey || null,
-          noiseKeyPublic: serializedAuthState.creds?.noiseKey || null,
-          signedIdentityKeyPrivate: serializedAuthState.creds?.signedIdentityKey || null,
-          signedIdentityKeyPublic: serializedAuthState.creds?.identityKey || null,
-          signedPreKeyPrivate: serializedAuthState.creds?.signedPreKey || null,
-          signedPreKeyPublic: serializedAuthState.creds?.signedPreKey || null,
-          registrationId: serializedAuthState.creds?.registrationId || null,
-          advSecretKey: serializedAuthState.creds?.advSecretKey || null,
-          nextPreKeyId: serializedAuthState.creds?.nextPreKeyId || null,
-          firstUnuploadedPreKeyId: serializedAuthState.creds?.firstUnuploadedPreKeyId || null,
-          serverHasPreKeys: serializedAuthState.creds?.serverHasPreKeys || false,
           numberDevice: authState.phoneNumber || null,
           status: this.hasValidCredentials(authState.creds) ? 'connected' : 'disconnected',
-          registered: this.hasValidCredentials(authState.creds)
+
         },
         create: {
+          id: instanceId,
           instanceId,
           nameDevice: `BZap-${instanceId}`,
           numberDevice: authState.phoneNumber || null,
           webhookUrl: null,
           events: ['messages', 'connection'],
           status: this.hasValidCredentials(authState.creds) ? 'connected' : 'disconnected',
-          registered: this.hasValidCredentials(authState.creds),
-          noiseKeyPrivate: serializedAuthState.creds?.noiseKey || null,
-          noiseKeyPublic: serializedAuthState.creds?.noiseKey || null,
-          signedIdentityKeyPrivate: serializedAuthState.creds?.signedIdentityKey || null,
-          signedIdentityKeyPublic: serializedAuthState.creds?.identityKey || null,
-          signedPreKeyPrivate: serializedAuthState.creds?.signedPreKey || null,
-          signedPreKeyPublic: serializedAuthState.creds?.signedPreKey || null,
-          registrationId: serializedAuthState.creds?.registrationId || null,
-          advSecretKey: serializedAuthState.creds?.advSecretKey || null,
-          nextPreKeyId: serializedAuthState.creds?.nextPreKeyId || null,
-          firstUnuploadedPreKeyId: serializedAuthState.creds?.firstUnuploadedPreKeyId || null,
-          serverHasPreKeys: serializedAuthState.creds?.serverHasPreKeys || false
         }
       });
       
@@ -284,29 +282,8 @@ export class SessionManager {
         return null;
       }
       
-      // Carrega as chaves do banco
-      const keys = await this.loadKeysFromDatabase(instanceId);
-      
-      // Deserializa as credenciais
-      const authState: AuthState = {
-        creds: {
-          noiseKey: instance.noiseKeyPrivate ? Buffer.from(instance.noiseKeyPrivate) : undefined,
-          signedIdentityKey: instance.signedIdentityKeyPrivate ? Buffer.from(instance.signedIdentityKeyPrivate) : undefined,
-          signedPreKey: instance.signedPreKeyPrivate ? Buffer.from(instance.signedPreKeyPrivate) : undefined,
-          identityKey: instance.signedIdentityKeyPublic ? Buffer.from(instance.signedIdentityKeyPublic) : undefined,
-          registrationId: instance.registrationId || undefined,
-          advSecretKey: instance.advSecretKey || undefined,
-          nextPreKeyId: instance.nextPreKeyId || undefined,
-          firstUnuploadedPreKeyId: instance.firstUnuploadedPreKeyId || undefined,
-          serverHasPreKeys: instance.serverHasPreKeys || false
-        },
-        keys,
-        deviceId: instanceId,
-        phoneNumber: instance.numberDevice || undefined,
-        profileName: instance.nameDevice || undefined,
-        platform: 'web',
-        lastAccountSyncTimestamp: instance.updatedAt.getTime()
-      };
+      // Reconstrói estado via método legado (sem usar JSON sessionData)
+      const authState = await this.loadAuthStateLegacy(instanceId, instance);
       
       // Cria dados de sessão para cache
       const sessionData: SessionData = {
@@ -326,6 +303,38 @@ export class SessionManager {
       Logger.error(`❌ Erro ao carregar estado de autenticação da instância ${instanceId}:`, error);
       return null;
     }
+  }
+
+  /**
+   * Método legado para carregar estado de autenticação (compatibilidade)
+   */
+  private async loadAuthStateLegacy(instanceId: string, instance: any): Promise<AuthState> {
+    // Carrega as chaves do banco
+    const keys = await this.loadKeysFromDatabase(instanceId);
+    
+    // Deserializa as credenciais
+    const authState: AuthState = {
+      creds: {
+        noiseKey: instance.noiseKeyPrivate ? Buffer.from(instance.noiseKeyPrivate) : undefined,
+        signedIdentityKey: instance.signedIdentityKeyPrivate ? Buffer.from(instance.signedIdentityKeyPrivate) : undefined,
+        signedPreKey: instance.signedPreKeyPrivate ? Buffer.from(instance.signedPreKeyPrivate) : undefined,
+        identityKey: instance.signedIdentityKeyPublic ? Buffer.from(instance.signedIdentityKeyPublic) : undefined,
+        registrationId: instance.registrationId || undefined,
+        advSecretKey: instance.advSecretKey || undefined,
+        nextPreKeyId: instance.nextPreKeyId || undefined,
+        firstUnuploadedPreKeyId: instance.firstUnuploadedPreKeyId || undefined,
+        serverHasPreKeys: instance.serverHasPreKeys || false
+      },
+      keys,
+      deviceId: instanceId,
+      phoneNumber: instance.numberDevice || undefined,
+      profileName: instance.nameDevice || undefined,
+      platform: 'web',
+      lastAccountSyncTimestamp: instance.updatedAt.getTime()
+    };
+    
+    Logger.info(`📂 Estado carregado pelo método legado para: ${instanceId}`);
+    return authState;
   }
 
   /**
@@ -384,7 +393,7 @@ export class SessionManager {
         prisma.preKey.deleteMany({ where: { instanceId } }),
         prisma.session.deleteMany({ where: { instanceId } }),
         prisma.senderKey.deleteMany({ where: { instanceId } }),
-        prisma.appStateSyncKey.deleteMany({ where: { instanceId } }),
+        prisma.appStateKey.deleteMany({ where: { instanceId } }),
         prisma.appStateVersion.deleteMany({ where: { instanceId } }),
         prisma.connectionLog.deleteMany({ where: { instanceId } }),
         prisma.messageLog.deleteMany({ where: { instanceId } }),
@@ -414,6 +423,9 @@ export class SessionManager {
     // Salva preKeys
     if (keys.preKeys) {
       for (const [keyId, keyData] of Object.entries(keys.preKeys)) {
+        const keyB64 = Buffer.isBuffer(keyData as any)
+          ? (keyData as any as Buffer).toString('base64')
+          : Buffer.from(keyData as any).toString('base64');
         promises.push(
           prisma.preKey.upsert({
             where: {
@@ -423,14 +435,14 @@ export class SessionManager {
               }
             },
             update: {
-              privateKey: Buffer.from(keyData),
+              privateKey: keyB64,
               used: false
             },
             create: {
               instanceId,
               keyId: parseInt(keyId),
-              privateKey: Buffer.from(keyData),
-              publicKey: Buffer.from(keyData), // Assumindo que publicKey é derivada ou igual
+              privateKey: keyB64,
+              publicKey: keyB64, // Assumindo que publicKey é derivada ou igual
               used: false
             }
           })
@@ -441,21 +453,25 @@ export class SessionManager {
     // Salva sessions
     if (keys.sessions) {
       for (const [sessionId, sessionData] of Object.entries(keys.sessions)) {
+        const [jid, deviceStr] = sessionId.split(':');
+        const device = Number(deviceStr) || 0;
         promises.push(
           prisma.session.upsert({
             where: {
-              instanceId_sessionId: {
+              instanceId_jid_device: {
                 instanceId,
-                sessionId
+                jid,
+                device
               }
             },
             update: {
-              sessionData: Buffer.from(JSON.stringify(sessionData), 'utf8')
+              record: Buffer.from(sessionData as any)
             },
             create: {
               instanceId,
-              sessionId,
-              sessionData: Buffer.from(JSON.stringify(sessionData), 'utf8')
+              jid,
+              device,
+              record: Buffer.from(sessionData as any)
             }
           })
         );
@@ -494,7 +510,7 @@ export class SessionManager {
     if (keys.appStateSyncKeys) {
       for (const [keyId, keyData] of Object.entries(keys.appStateSyncKeys)) {
         promises.push(
-          prisma.appStateSyncKey.upsert({
+          prisma.appStateKey.upsert({
             where: {
               instanceId_keyId: {
                 instanceId,
@@ -505,6 +521,7 @@ export class SessionManager {
               keyData: Buffer.from(JSON.stringify(keyData), 'utf8')
             },
             create: {
+              id: `${instanceId}:${keyId}`,
               instanceId,
               keyId,
               keyData: Buffer.from(JSON.stringify(keyData), 'utf8')
@@ -552,7 +569,7 @@ export class SessionManager {
       prisma.preKey.findMany({ where: { instanceId } }),
       prisma.session.findMany({ where: { instanceId } }),
       prisma.senderKey.findMany({ where: { instanceId } }),
-      prisma.appStateSyncKey.findMany({ where: { instanceId } }),
+      prisma.appStateKey.findMany({ where: { instanceId } }),
       prisma.appStateVersion.findMany({ where: { instanceId } })
     ]);
 
@@ -561,23 +578,24 @@ export class SessionManager {
     // Carrega preKeys
     if (preKeys.length > 0) {
       keys.preKeys = {};
-      preKeys.forEach(preKey => {
-        keys.preKeys![preKey.keyId] = Buffer.from(preKey.privateKey);
+      preKeys.forEach((preKey: any) => {
+        keys.preKeys![preKey.keyId] = Buffer.from(preKey.privateKey, 'base64');
       });
     }
 
     // Carrega sessions
     if (sessions.length > 0) {
       keys.sessions = {};
-      sessions.forEach(session => {
-        keys.sessions![session.sessionId] = JSON.parse(Buffer.from(session.sessionData).toString('utf8'));
+      sessions.forEach((session: any) => {
+        const id = `${session.jid}:${session.device}`;
+        keys.sessions![id] = Buffer.from(session.record);
       });
     }
 
     // Carrega senderKeys
     if (senderKeys.length > 0) {
       keys.senderKeys = {};
-      senderKeys.forEach(senderKey => {
+      senderKeys.forEach((senderKey: any) => {
         if (!keys.senderKeys![senderKey.groupId]) {
           keys.senderKeys![senderKey.groupId] = {};
         }
@@ -588,15 +606,15 @@ export class SessionManager {
     // Carrega appStateSyncKeys
     if (appStateSyncKeys.length > 0) {
       keys.appStateSyncKeys = {};
-      appStateSyncKeys.forEach(key => {
-        keys.appStateSyncKeys![key.keyId] = JSON.parse(Buffer.from(key.keyData).toString('utf8'));
+      appStateSyncKeys.forEach((key: any) => {
+        keys.appStateSyncKeys![key.keyId] = Buffer.from(key.keyData);
       });
     }
 
     // Carrega appStateVersions
     if (appStateVersions.length > 0) {
       keys.appStateVersions = {};
-      appStateVersions.forEach(version => {
+      appStateVersions.forEach((version: any) => {
         keys.appStateVersions![version.name] = version.version;
       });
     }
@@ -608,16 +626,32 @@ export class SessionManager {
    * Serializa estado de autenticação para armazenamento
    */
   private serializeAuthState(authState: AuthState): any {
-    if (!authState.creds) return null;
+    if (!authState.creds) return { creds: {} };
 
-    const serialized: any = {};
+    const serialized: any = { creds: {} };
 
     Object.keys(authState.creds).forEach(key => {
       const value = (authState.creds as any)[key];
       if (Buffer.isBuffer(value)) {
-        serialized[key] = value.toString('base64');
+        serialized.creds[key] = value.toString('base64');
+      } else if (value && typeof value === 'object' && value.private && value.public) {
+        // Para objetos com private/public (como noiseKey, signedIdentityKey)
+        serialized.creds[key] = {
+          private: Buffer.isBuffer(value.private) ? value.private.toString('base64') : value.private,
+          public: Buffer.isBuffer(value.public) ? value.public.toString('base64') : value.public
+        };
+      } else if (value && typeof value === 'object' && value.keyPair) {
+        // Para signedPreKey que tem keyPair
+        serialized.creds[key] = {
+          keyId: value.keyId,
+          keyPair: {
+            private: Buffer.isBuffer(value.keyPair.private) ? value.keyPair.private.toString('base64') : value.keyPair.private,
+            public: Buffer.isBuffer(value.keyPair.public) ? value.keyPair.public.toString('base64') : value.keyPair.public
+          },
+          signature: Buffer.isBuffer(value.signature) ? value.signature.toString('base64') : value.signature
+        };
       } else {
-        serialized[key] = value;
+        serialized.creds[key] = value;
       }
     });
 

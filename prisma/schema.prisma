@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,173 +7,170 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// Modelo principal para instâncias do WhatsApp
 model Instance {
-  id                          String    @id @default(cuid())
-  instanceId                  String    @unique
-  nameDevice                  String?
-  numberDevice                String?
-  webhookUrl                  String?
-  events                      String[]  @default([])
-  status                      String    @default("disconnected") // disconnected, connecting, connected, qr_code
-  
-  // Credenciais de autenticação
-  noiseKeyPrivate             Bytes?
-  noiseKeyPublic              Bytes?
-  pairingEphemeralKeyPrivate  Bytes?
-  pairingEphemeralKeyPublic   Bytes?
-  signedIdentityKeyPrivate    Bytes?
-  signedIdentityKeyPublic     Bytes?
-  signedPreKeyId              Int?
-  signedPreKeyPrivate         Bytes?
-  signedPreKeyPublic          Bytes?
-  signedPreKeySignature       Bytes?
-  registrationId              Int?
-  advSecretKey                String?
-  nextPreKeyId                Int       @default(1)
-  firstUnuploadedPreKeyId     Int       @default(1)
-  serverHasPreKeys            Boolean   @default(false)
-  
-  // Campos obrigatórios Baileys
-  processedHistoryMessages    Json      @default("[]")
-  accountSyncCounter          Int       @default(0)
-  accountSettings             Json      @default("{\"unarchiveChats\": false}")
-  registered                  Boolean   @default(false)
-  
-  // Campos opcionais
-  pairingCode                 String?
-  lastPropHash                String?
-  routingInfo                 Bytes?
-  
-  // Informações do usuário
-  userId                      String?
-  userName                    String?
-  userLid                     String?
-  
-  // Identidades Signal
-  signalIdentities            Json      @default("[]")
-  myAppStateKeyId             String?
-  lastAccountSyncTimestamp    BigInt?
-  platform                    String?
-  
-  // Metadados
-  createdAt                   DateTime  @default(now())
-  updatedAt                   DateTime  @updatedAt
-  lastAccess                  DateTime  @default(now())
-  
-  // Relacionamentos
-  preKeys                     PreKey[]
-  sessions                    Session[]
-  connectionLogs              ConnectionLog[]
-  messageLogs                 MessageLog[]
-  
+  id           String   @id
+  instanceId   String   @unique
+  nameDevice   String?
+  numberDevice String?
+  webhookUrl   String?
+  events       String[] @db.Text
+  status       String   @default("disconnected")
+  platform     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  lastAccess   DateTime @default(now())
+
+  // Relações
+  connectionLogs   ConnectionLog[]
+  messageLogs      MessageLog[]
+  preKeys          PreKey[]
+  sessions         Session[]
+  senderKeys       SenderKey[]
+  credentials      Credential?
+  identities       Identity[]
+  appStateKeys     AppStateKey[]
+  appStateVersions AppStateVersion[]
+  signedPreKeys    SignedPreKey[]
+
   @@map("instances")
 }
 
-// Modelo para pre-keys
 model PreKey {
-  id          String    @id @default(cuid())
-  instanceId  String
-  keyId       Int
-  privateKey  Bytes
-  publicKey   Bytes
-  used        Boolean   @default(false)
-  usedAt      DateTime?
-  createdAt   DateTime  @default(now())
-  
-  // Relacionamento
-  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
-  
+  keyId      Int       @id @map("id")
+  instanceId String
+  used       Boolean   @default(false)
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+  privateKey String    @map("private")
+  publicKey  String    @map("public")
+  instance   Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
   @@unique([instanceId, keyId])
   @@map("pre_keys")
 }
 
-// Modelo para sessões Signal
 model Session {
-  id          String    @id @default(cuid())
-  instanceId  String
-  sessionId   String    // JID ou identificador da sessão
-  sessionData Bytes     // Dados da sessão serializada
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
-  // Relacionamento
-  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
-  
-  @@unique([instanceId, sessionId])
+  id         Int      @id @default(autoincrement())
+  instanceId String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  device     Int      @default(0)
+  jid        String
+  record     Json
+  instance   Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
+  @@unique([instanceId, jid, device])
   @@map("sessions")
 }
 
-// Modelo para sender keys (chaves de grupo)
 model SenderKey {
-  id          String    @id @default(cuid())
-  instanceId  String
-  groupId     String
-  senderId    String
-  senderKey   Bytes
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
+  id         String   @id @default(cuid())
+  instanceId String
+  groupId    String
+  senderId   String
+  senderKey  Bytes
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  instance   Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
   @@unique([instanceId, groupId, senderId])
   @@map("sender_keys")
 }
 
-// Modelo para chaves de sincronização de app state
-model AppStateSyncKey {
-  id          String    @id @default(cuid())
-  instanceId  String
-  keyId       String
-  keyData     Bytes
-  createdAt   DateTime  @default(now())
-  
+model AppStateKey {
+  id         String   @id
+  instanceId String
+  keyId      String
+  keyData    Bytes
+  createdAt  DateTime @default(now())
+  instance   Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
   @@unique([instanceId, keyId])
-  @@map("app_state_sync_keys")
+  @@map("app_state_keys")
 }
 
-// Modelo para versões de app state
 model AppStateVersion {
-  id          String    @id @default(cuid())
-  instanceId  String
-  name        String
-  version     Int
-  hash        Bytes?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
+  id         String   @id @default(cuid())
+  instanceId String
+  name       String
+  version    Int
+  hash       Bytes?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  instance   Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
   @@unique([instanceId, name])
   @@map("app_state_versions")
 }
 
-// Modelo para logs de conexão
 model ConnectionLog {
-  id          String    @id @default(cuid())
-  instanceId  String
-  event       String    // connected, disconnected, qr_generated, etc.
-  status      String?
-  message     String?
-  metadata    Json?
-  timestamp   DateTime  @default(now())
-  
-  // Relacionamento
-  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
-  
+  id         String   @id @default(cuid())
+  instanceId String
+  event      String
+  status     String?
+  message    String?
+  metadata   Json?
+  timestamp  DateTime @default(now())
+  instance   Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
   @@map("connection_logs")
 }
 
-// Modelo para logs de mensagens
 model MessageLog {
-  id          String    @id @default(cuid())
+  id          String   @id @default(cuid())
   instanceId  String
   messageId   String?
   fromJid     String?
   toJid       String?
-  messageType String?   // text, image, audio, etc.
+  messageType String?
   content     String?
   metadata    Json?
-  timestamp   DateTime  @default(now())
-  
-  // Relacionamento
-  instance    Instance  @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
-  
+  timestamp   DateTime @default(now())
+  instance    Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
   @@map("message_logs")
+}
+
+model Credential {
+  instanceId        String  @id
+  registrationId    Int
+  noiseKey          String
+  identityKey       String
+  advSecretKey      String?
+  signedPreKeyId    Int?
+  signedPreKeyPub   String?
+  signedPreKeyPriv  String?
+  signedPreKeySig   String?
+  companionKey      String? // companion_enc_static em base64
+  updatedAt         DateTime
+  instance          Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
+  @@map("credentials")
+}
+
+model Identity {
+  id           Int      @id @default(autoincrement())
+  instanceId   String
+  jid          String
+  identityKey  String
+  trustLevel   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime
+  instance     Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
+  @@unique([instanceId, jid])
+  @@map("identities")
+}
+
+model SignedPreKey {
+  id        Int      @id
+  instanceId String
+  public    String
+  private   String
+  signature String
+  timestamp DateTime
+  instance  Instance @relation(fields: [instanceId], references: [instanceId], onDelete: Cascade)
+
+  @@unique([instanceId, id])
+  @@map("signed_prekeys")
 }

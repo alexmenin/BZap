@@ -6,12 +6,30 @@ import { AUTH_CONFIG } from '../constants/Constants';
 
 // Usar API de curva diretamente do libsignal
 import * as curve from 'libsignal/src/curve';
+
 /**
  * Interface para par de chaves ECDH
  */
 export interface KeyPair {
   public: Buffer;
   private: Buffer;
+}
+
+/**
+ * Interface para pre-key
+ */
+export interface PreKey {
+  keyId: number;
+  keyPair: KeyPair;
+}
+
+/**
+ * Interface para signed pre-key
+ */
+export interface SignedPreKey {
+  keyId: number;
+  keyPair: KeyPair;
+  signature: Buffer;
 }
 
 /**
@@ -297,6 +315,175 @@ export class KeyManager {
     console.log(`✍️ Assinatura XEdDSA gerada: ${Buffer.from(signature).toString('hex')}`);
 
     return Buffer.from(signature);
+  }
+
+  /**
+   * Gera múltiplas pre-keys
+   */
+  public static generatePreKeys(startId: number, count: number): PreKey[] {
+    const preKeys: PreKey[] = [];
+    
+    for (let i = 0; i < count; i++) {
+      const keyId = startId + i;
+      const keyPair = this.generateKeyPair();
+      
+      preKeys.push({
+        keyId,
+        keyPair
+      });
+    }
+    
+    console.log(`🔑 Geradas ${count} pre-keys (IDs: ${startId} - ${startId + count - 1})`);
+    return preKeys;
+  }
+
+  /**
+   * Gera uma signed pre-key
+   */
+  public static generateSignedPreKey(identityKeyPair: KeyPair, keyId: number): SignedPreKey {
+    const keyPair = this.generateKeyPair();
+    
+    // Adiciona prefixo DJB à chave pública para assinatura
+    const pubKeyWithPrefix = this.generateSignalPubKey(keyPair.public);
+    
+    // Assina a chave pública com a chave de identidade
+    const signature = curve.calculateSignature(identityKeyPair.private, pubKeyWithPrefix);
+    
+    console.log(`🔏 Signed pre-key gerada (ID: ${keyId})`);
+    
+    return {
+      keyId,
+      keyPair,
+      signature: Buffer.from(signature)
+    };
+  }
+
+  /**
+   * Remove uma pre-key consumida do keyStore
+   */
+  public static async removeConsumedPreKey(keyStore: any, keyId: number): Promise<void> {
+    try {
+      const key = `pre-key:${keyId}`;
+      
+      // Remove do cache
+      if (keyStore.keysCache && keyStore.keysCache.has(key)) {
+        keyStore.keysCache.delete(key);
+        console.log(`🗑️ Pre-key ${keyId} removida do cache`);
+      }
+      
+      // Marca como usada no banco de dados
+      if (keyStore.instanceId) {
+        await keyStore.markPreKeyAsUsed(keyId);
+        console.log(`🗑️ Pre-key ${keyId} marcada como usada no banco`);
+      }
+      
+      // Força salvamento das mudanças
+      if (keyStore.debouncedSaveKeys) {
+        keyStore.debouncedSaveKeys();
+      }
+      
+    } catch (error) {
+      console.error(`❌ Erro ao remover pre-key ${keyId}:`, error);
+    }
+  }
+
+  /**
+   * Verifica se é necessário regenerar pre-keys
+   */
+  public static async checkAndRegeneratePreKeys(keyStore: any, minPreKeys: number = 10): Promise<void> {
+    try {
+      const availablePreKeys = await this.countAvailablePreKeys(keyStore);
+      
+      if (availablePreKeys < minPreKeys) {
+        console.log(`⚠️ Estoque baixo de pre-keys: ${availablePreKeys}/${minPreKeys}`);
+        await this.regeneratePreKeys(keyStore, 100); // Gera 100 novas pre-keys
+      }
+    } catch (error) {
+      console.error('❌ Erro ao verificar/regenerar pre-keys:', error);
+    }
+  }
+
+  /**
+   * Conta pre-keys disponíveis
+   */
+  private static async countAvailablePreKeys(keyStore: any): Promise<number> {
+    if (!keyStore.keysCache) return 0;
+    
+    let count = 0;
+    for (const [key] of keyStore.keysCache.entries()) {
+      if (key.startsWith('pre-key:')) {
+        count++;
+      }
+    }
+    
+    return count;
+  }
+
+  /**
+   * Regenera pre-keys quando estoque está baixo
+   */
+  private static async regeneratePreKeys(keyStore: any, count: number): Promise<void> {
+    try {
+      // Obtém o próximo ID de pre-key
+      const nextPreKeyId = await this.getNextPreKeyId(keyStore);
+      
+      // Gera novas pre-keys
+      const newPreKeys = this.generatePreKeys(nextPreKeyId, count);
+      
+      // Adiciona ao cache
+      for (const preKey of newPreKeys) {
+        const key = `pre-key:${preKey.keyId}`;
+        keyStore.keysCache.set(key, {
+          keyId: preKey.keyId,
+          public: preKey.keyPair.public,
+          private: preKey.keyPair.private
+        });
+      }
+
+      // ✅ Duplicar a primeira pre-key como fallback id=0 (nunca removida)
+      // Removido comportamento de fallback id=0 para alinhar ao Baileys/Signal
+      
+      // Atualiza o nextPreKeyId
+      if (keyStore.updateNextPreKeyId) {
+        await keyStore.updateNextPreKeyId(nextPreKeyId + count);
+      }
+      
+      // Salva no banco
+      if (keyStore.debouncedSaveKeys) {
+        keyStore.debouncedSaveKeys();
+      }
+      
+      console.log(`✅ ${count} novas pre-keys geradas e salvas`);
+      
+    } catch (error) {
+      console.error('❌ Erro ao regenerar pre-keys:', error);
+    }
+  }
+
+  /**
+   * Obtém o próximo ID de pre-key disponível
+   */
+  private static async getNextPreKeyId(keyStore: any): Promise<number> {
+    try {
+      // Tenta obter do keyStore primeiro
+      const creds = await keyStore.get('creds');
+      if (creds && creds.nextPreKeyId) {
+        return creds.nextPreKeyId;
+      }
+      
+      // Se não encontrar, calcula baseado nas pre-keys existentes
+      const preKeys = await keyStore.get('pre-key') || {};
+      const existingIds = Object.keys(preKeys).map(id => parseInt(id)).filter(id => !isNaN(id));
+      
+      if (existingIds.length === 0) {
+        return 1; // Começa do 1 se não há pre-keys
+      }
+      
+      return Math.max(...existingIds) + 1;
+    } catch (error) {
+      console.error('❌ Erro ao obter próximo pre-key ID:', error);
+      return 1; // Fallback
+    }
   }
 
   /**

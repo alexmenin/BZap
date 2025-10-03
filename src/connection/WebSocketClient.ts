@@ -14,6 +14,12 @@ import { configureSuccessfulPairing, getBinaryNodeChild, generateRegistrationNod
 import { uploadPreKeysToServerIfRequired } from '../utils/PreKeyManager';
 import { encodeBinaryNode } from '../protocol/WABinary/encode';
 import { binaryNodeToString } from '../protocol/WABinary/decode';
+import { MessageDecryption } from '../crypto/MessageDecryption';
+import { SignalProtocolStore } from '../crypto/SignalProtocolStore';
+import { createSignalProtocolAddress } from '../utils/SignalUtils';
+const libsignal = require('libsignal');
+
+
 import {
   WA_SOCKET_URL,
   DEFAULT_ORIGIN,
@@ -76,6 +82,7 @@ export interface ConnectionUpdate {
     date?: Date;
   };
   qr?: string;
+  qrRefs?: string[]; // Lista de referências QR para ciclo
   isNewLogin?: boolean;
   isOnline?: boolean;
   receivedPendingNotifications?: boolean;
@@ -91,6 +98,7 @@ export class WebSocketClient extends EventEmitter {
   private maxReconnectAttempts = MAX_RECONNECT_ATTEMPTS;
   private reconnectDelay = RECONNECT_BASE_DELAY;
   private noiseHandler: any;
+  private instanceId?: string;
   private keepAliveInterval?: NodeJS.Timeout;
   private connectionTimeout?: NodeJS.Timeout;
   private httpsAgent: Agent;
@@ -169,12 +177,13 @@ export class WebSocketClient extends EventEmitter {
     this.emit('connection.update', update);
   }
 
-  constructor(proxyConfig?: ProxyConfig, authState?: AuthenticationState, saveCreds?: () => Promise<void>) {
+  constructor(proxyConfig?: ProxyConfig, authState?: AuthenticationState, saveCreds?: () => Promise<void>, instanceId?: string) {
     super();
     this.noiseHandler = null;
     this.proxyConfig = proxyConfig;
     this.authState = authState;
     this.saveCreds = saveCreds;
+    this.instanceId = instanceId;
     this.httpsAgent = this.createAgent();
   }
 
@@ -271,7 +280,9 @@ export class WebSocketClient extends EventEmitter {
           private: Buffer.from(this.authState.creds.pairingEphemeralKeyPair.private)
         },
         NOISE_HEADER: WA_CONN_HEADER,
-        logger: console as any
+        logger: console as any,
+        authState: this.authState,
+        instanceId: this.instanceId
       });
 
       // 1. Envia ClientHello com chave efêmera (seguindo padrão Baileys)
@@ -566,6 +577,22 @@ export class WebSocketClient extends EventEmitter {
 
           this.startKeepAlive();
 
+          // Se já está registrado e handshake finalizado, reenvia presença + passive IQ
+          // para garantir ativação do canal mesmo quando CB:success não é emitido
+          try {
+            if (this.authState?.creds?.registered && this.noiseHandler?.isFinished()) {
+              console.log('📡 Reenviando presença e passive IQ após conexão (registered)');
+              await this.sendNode({
+                tag: 'presence',
+                attrs: { name: 'desktop', type: 'available' }
+              });
+              await this.maybeSendPassiveActive();
+              console.log('✅ Canal de mensagens reativado (pós-conexão)');
+            }
+          } catch (err) {
+            console.warn('⚠️ Falha ao reativar canal pós-conexão:', err);
+          }
+
           // NÃO emitir 'connected' aqui - será emitido quando receber success ou pair-device
           resolve();
 
@@ -579,18 +606,18 @@ export class WebSocketClient extends EventEmitter {
 
       this.ws.on('message', (data: Buffer) => {
         this.lastDateRecv = new Date(); // Atualiza timestamp sempre que recebe dados
-        console.log(`📨 Dados recebidos: ${data.length} bytes`);
-        this.logBinaryData('RECV', data);
+        // console.log(`📨 Dados recebidos: ${data.length} bytes`);
+        // this.logBinaryData('RECV', data);
 
         // Processa dados através do NoiseHandler seguindo padrão Baileys-master
         // dentro do decodeFrame callback
         this.noiseHandler.decodeFrame(data, async (frame: Buffer | any) => {
-          // log do XML se tiver .tag
-          if ((frame as any)?.tag) {
+          // log apenas do XML de mensagens descriptografadas (sem dados criptografados)
+          if ((frame as any)?.tag && (frame as any)?.tag !== 'message') {
             try {
               const xmlString = binaryNodeToString(frame as any)
-              console.log('📋 XML DECODIFICADO:')
-              console.log(xmlString)
+              // console.log('📋 XML DECODIFICADO:')
+              // console.log(xmlString)
             } catch { }
           }
 
@@ -677,8 +704,8 @@ export class WebSocketClient extends EventEmitter {
 
     // Codifica o nó binário usando encoder oficial do WABinary (função assíncrona)
     const encoded = await encodeBinaryNode(node);
-    console.log('DEBUG PONG XML:', binaryNodeToString(node));
-    console.log('DEBUG PONG HEX:', encoded.toString('hex'));
+    // console.log('DEBUG PONG XML:', binaryNodeToString(node));
+    // console.log('DEBUG PONG HEX:', encoded.toString('hex'));
     return this.sendBinaryNode(encoded);
   }
 
@@ -700,7 +727,7 @@ export class WebSocketClient extends EventEmitter {
 
       // Separação correta: NoiseHandler faz apenas criptografia, WebSocketClient faz framing
       if (this.noiseHandler && this.noiseHandler.isFinished()) {
-        console.log('🔐 Criptografando dados através do NoiseHandler...');
+        // console.log('🔐 Criptografando dados através do NoiseHandler...');
         const encrypted = this.noiseHandler.encrypt(data); // apenas criptografia
         frame = this.encodeFrame(encrypted); // framing (header + length prefix) feito aqui
       } else {
@@ -708,17 +735,16 @@ export class WebSocketClient extends EventEmitter {
         frame = this.encodeFrame(data);
       }
 
-      console.log('📤 Enviando frame binário:', {
-        originalSize: data.length,
-        encodedSize: frame.length,
-        hasNoiseHandler: !!this.noiseHandler,
-        isHandshakeFinished: this.noiseHandler?.isFinished()
-      });
+      // console.log('📤 Enviando frame binário:', {
+      //   originalSize: data.length,
+      //   encodedSize: frame.length,
+      //   hasNoiseHandler: !!this.noiseHandler,
+      //   isHandshakeFinished: this.noiseHandler?.isFinished()
+      // });
 
       this.ws.send(frame);
-      this.logBinaryData('SEND', frame);
-
-      console.log('✅ Frame enviado com sucesso');
+      // this.logBinaryData('SEND', frame);
+      // console.log('✅ Frame enviado com sucesso');
 
     } catch (error: any) {
       console.error('❌ Erro ao enviar dados binários:', {
@@ -853,12 +879,8 @@ export class WebSocketClient extends EventEmitter {
         // ✅ CORREÇÃO 2: Upload de pre-keys com lock para evitar duplicação
         await this.uploadPreKeysToServerIfRequired();
 
-        // ✅ CORREÇÃO 3: Envia passive IQ 'active' apenas uma vez por sessão
-        if (!this.passiveIqSent) {
-          await this.sendPassiveIq('active');
-          this.passiveIqSent = true;
-          console.log('✅ Passive IQ active enviado (primeira vez)');
-        }
+        // ✅ CORREÇÃO 3: Envia passive IQ 'active' com debounce
+        await this.maybeSendPassiveActive();
 
       } catch (err: any) {
         console.warn('⚠️ Falha ao enviar passive IQ inicial:', err);
@@ -875,13 +897,51 @@ export class WebSocketClient extends EventEmitter {
     // Handler para notificações (notification)
     this.on('CB:notification', async (stanza: any) => {
       try {
-        console.log('🔔 Notificação recebida:', stanza.attrs?.type);
+        console.debug('🔔 Notificação recebida:', stanza.attrs?.type);
 
         // Emite evento de notificação
         this.emit('messages.upsert', {
           messages: [stanza],
           type: 'notify'
         });
+
+        // ✅ Ack de HISTORY_SYNC_NOTIFICATION e patches para liberar fluxo de mensagens
+        const hasChild = (tag: string) => {
+          return Array.isArray(stanza.content) && stanza.content.some((c: any) => c?.tag === tag);
+        };
+
+        const shouldAckHistSync =
+          hasChild('sync') ||
+          hasChild('hist_sync') ||
+          hasChild('history') ||
+          hasChild('app_state_sync_key_share');
+
+        if (shouldAckHistSync) {
+          const receiptNode = {
+            tag: 'receipt',
+            attrs: {
+              to: 's.whatsapp.net',
+              type: 'hist_sync',
+              id: stanza?.attrs?.id ?? this.generateMessageTag()
+            }
+          };
+          console.debug('📩 Enviando receipt de hist_sync');
+          await this.sendNode(receiptNode);
+        }
+
+        // Ack para patches de app state (patch/patches)
+        if (hasChild('patch') || hasChild('patches')) {
+          const receiptPatch = {
+            tag: 'receipt',
+            attrs: {
+              to: 's.whatsapp.net',
+              type: 'patch',
+              id: stanza?.attrs?.id ?? this.generateMessageTag()
+            }
+          };
+          console.debug('📩 Enviando receipt de patch');
+          await this.sendNode(receiptPatch);
+        }
 
       } catch (error) {
         console.error('❌ Erro ao processar notificação:', error);
@@ -900,6 +960,20 @@ export class WebSocketClient extends EventEmitter {
         console.error('❌ Erro ao processar receipt:', error);
       }
     });
+
+    // ✅ Handler para mensagens (CB:message) - seguindo padrão Baileys
+    this.on('CB:message', async (stanza: any) => {
+      try {
+        // Emite mensagem no formato Baileys
+        this.emit('messages.upsert', {
+          messages: [stanza],
+          type: 'notify'
+        });
+
+      } catch (error) {
+        console.error('❌ Erro ao processar mensagem:', error);
+      }
+    });
   }
 
   /**
@@ -911,12 +985,18 @@ export class WebSocketClient extends EventEmitter {
       return;
     }
 
-    // ✅ NOVA CORREÇÃO: Só processar CB:success após pair-success real
-    // Verifica se já houve um pair-success válido antes de processar o success
-    if (!this._pairSuccessHandled) {
-      console.log('⚠️ CB:success recebido antes do pair-success - ignorando');
-      console.log('🔍 Aguardando pair-success real antes de processar connection:open');
-      return;
+    // ✅ CORREÇÃO RECONEXÃO: Se já registrado, aceitar success sem pair-success
+    if (this.authState?.creds?.registered) {
+      console.log('✅ Sessão já registrada - usando success como conexão válida');
+      console.log('🔄 Reconexão com credenciais salvas detectada');
+    } else {
+      // ✅ NOVA CORREÇÃO: Só processar CB:success após pair-success real para primeiro login
+      // Verifica se já houve um pair-success válido antes de processar o success
+      if (!this._pairSuccessHandled) {
+        console.log('⚠️ CB:success recebido antes do pair-success - ignorando');
+        console.log('🔍 Aguardando pair-success real antes de processar connection:open');
+        return;
+      }
     }
 
     this._successHandled = true;
@@ -931,6 +1011,13 @@ export class WebSocketClient extends EventEmitter {
       // ✅ CORREÇÃO: Garantir persistência imediata após success
       if (this.authState?.creds) {
         this.authState.creds.registered = true;
+
+        // ✅ NOVA CORREÇÃO: Importar companion_enc_static do nó success para reconexões
+        if (node.attrs?.companion_enc_static && this.authState.creds) {
+          console.log('🔑 Importando companion_enc_static do success para authState');
+          this.authState.creds.companionKey = Buffer.from(node.attrs.companion_enc_static, 'base64');
+          console.log('✅ companion_enc_static importado com sucesso');
+        }
 
         // Salva as credenciais imediatamente
         if (this.saveCreds) {
@@ -951,6 +1038,28 @@ export class WebSocketClient extends EventEmitter {
         // Salva as credenciais se a função estiver disponível
         if (this.saveCreds) {
           await this.saveCreds();
+        }
+      }
+
+      // ✅ NOVA FUNCIONALIDADE: Criar sessão inicial se necessário (tanto para primeiro login quanto reconexão)
+      try {
+        console.log('🔍 Verificando se precisa criar sessão inicial...');
+        await this.createInitialSession();
+      } catch (error) {
+        console.warn('⚠️ Erro ao criar sessão inicial:', error);
+      }
+
+      // ✅ CORREÇÃO RECONEXÃO: Enviar presence para ativar recepção de mensagens
+      if (this.authState?.creds?.registered) {
+        console.log('📡 Enviando presença (available) para ativar recepção de mensagens');
+        try {
+          await this.sendNode({
+            tag: 'presence',
+            attrs: { name: 'desktop', type: 'available' }
+          });
+          console.log('✅ Presença enviada - canal de mensagens ativado');
+        } catch (error) {
+          console.warn('⚠️ Erro ao enviar presença:', error);
         }
       }
 
@@ -984,21 +1093,19 @@ export class WebSocketClient extends EventEmitter {
     const identityKeyB64 = Buffer.from(this.authState!.creds.signedIdentityKey.public).toString('base64');
     const advB64 = this.authState!.creds.advSecretKey;
 
-    // Gera todos os QRs imediatamente (sem timers) - padrão Baileys
-    console.log(`📱 Gerando ${this.qrRefs.length} QR codes imediatamente`);
+    // Gera lista de QRs para o ciclo (novo formato)
+    const qrList = this.qrRefs.map(ref => [ref, noiseKeyB64, identityKeyB64, advB64].join(','));
+    
+    console.log(`📱 Enviando ${qrList.length} QR codes para ciclo`);
 
-    for (let i = 0; i < this.qrRefs.length; i++) {
-      const ref = this.qrRefs[i];
-      const qr = [ref, noiseKeyB64, identityKeyB64, advB64].join(',');
+    // Emite evento com lista de QRs para o ciclo
+    this.emit('connection.update', {
+      connection: 'connecting',
+      qrRefs: qrList,
+      isNewLogin: true
+    });
 
-      this.emit('connection.update', {
-        connection: 'connecting',
-        qr: qr,
-        isNewLogin: true
-      });
-
-      console.log(`🔄 QR ${i + 1}/${this.qrRefs.length} gerado`);
-    }
+    console.log(`🔄 Ciclo de QR iniciado com ${qrList.length} referências`);
   }
 
   // ✅ CORREÇÃO 5: Garantir que QR seja parado exatamente uma vez após pair-success
@@ -1115,15 +1222,47 @@ export class WebSocketClient extends EventEmitter {
       // ✅ Salvar imediatamente após todas as atualizações
       if (this.saveCreds) {
         await this.saveCreds();
-        console.log('💾 Credenciais salvas após pair-success com dados completos');
-        console.log(`📱 Device ID: ${this.authState!.creds.me?.id}`);
-        console.log(`🆔 LID: ${this.authState!.creds.me?.lid}`);
-        console.log(`✅ Registered: ${this.authState!.creds.registered}`);
-        console.log(`🖥️ Platform: ${this.authState!.creds.platform}`);
       }
+      
+      // ✅ CORREÇÃO: Persistir signalIdentities no SignalProtocolStore
+      try {
+        // Cria SignalProtocolStore usando o authState atual
+        const signalStore = new SignalProtocolStore(
+          this.authState!.keys,
+          {
+            pubKey: this.authState!.creds.signedIdentityKey.public,
+            privKey: this.authState!.creds.signedIdentityKey.private
+          },
+          this.authState!.creds.registrationId,
+          this.authState!.creds,
+          this.instanceId, // Garantir que instanceId é passado
+          this.authState // Passar authState para permitir persistência
+        );
+        
+        // Persistir a identidade local no banco para evitar Bad MAC
+        if (deviceJid) {
+          const addressInfo = createSignalProtocolAddress(deviceJid);
+          await signalStore.storeIdentity(
+            addressInfo,
+            Buffer.from(this.authState!.creds.signedIdentityKey.public)
+          );
+          console.log(`💾 Identidade local persistida no banco para: ${deviceJid}`);
+        }
+      } catch (error) {
+        console.error('❌ Erro ao persistir identidade no SignalProtocolStore:', error);
+      }
+      
+      console.log('💾 Credenciais salvas após pair-success com dados completos');
+      console.log(`📱 Device ID: ${this.authState!.creds.me?.id}`);
+      console.log(`🆔 LID: ${this.authState!.creds.me?.lid}`);
+      console.log(`✅ Registered: ${this.authState!.creds.registered}`);
+      console.log(`🖥️ Platform: ${this.authState!.creds.platform}`);
 
       // ✅ Upload das Pre-Keys com lock para evitar duplicidade
       await this.uploadPreKeysToServerIfRequired();
+
+      // ✅ NOVA FUNCIONALIDADE: Criar sessão inicial após pareamento bem-sucedido
+      await this.createInitialSession();
 
       // ✅ CORREÇÃO: Emite apenas creds.update no pair-success (padrão Baileys)
       this.emit('creds.update', this.authState!.creds);
@@ -1166,6 +1305,60 @@ export class WebSocketClient extends EventEmitter {
           date: new Date()
         }
       });
+    }
+  }
+
+  /**
+   * Cria sessão inicial após pareamento bem-sucedido
+   * Necessário para que as mensagens possam ser descriptografadas
+   */
+  private async createInitialSession(): Promise<void> {
+    try {
+      if (!this.authState?.creds?.me?.id) {
+        console.log('⚠️ Não é possível criar sessão inicial - me.id não disponível');
+        return;
+      }
+
+      const deviceJid = this.authState.creds.me.id;
+      console.log(`🔐 Criando sessão inicial para device: ${deviceJid}`);
+
+      // Cria SignalProtocolStore usando o authState atual
+      const signalStore = new SignalProtocolStore(
+        this.authState.keys,
+        {
+          pubKey: this.authState.creds.signedIdentityKey.public,
+          privKey: this.authState.creds.signedIdentityKey.private
+        },
+        this.authState.creds.registrationId,
+        this.authState.creds,
+        this.instanceId // Adicionando instanceId para permitir persistência no Prisma
+      );
+
+      // Cria endereço do protocolo Signal usando a função helper do projeto
+      const addressInfo = createSignalProtocolAddress(deviceJid);
+      const address = new libsignal.ProtocolAddress(addressInfo.name, addressInfo.deviceId);
+
+      // Verifica se já existe uma sessão
+      const hasExistingSession = await signalStore.containsSession(addressInfo);
+      if (hasExistingSession) {
+        console.log(`✅ Sessão já existe para ${deviceJid}.${addressInfo.deviceId}`);
+        return;
+      }
+
+      // Não criar sessões manualmente: o libsignal/WhatsApp irá criar e salvar
+      // automaticamente a primeira vez que uma mensagem for recebida.
+      // Apenas registre que a sessão será criada on-demand.
+      console.log(`ℹ️ Nenhuma sessão existente para ${deviceJid}.${addressInfo.deviceId} ainda. Será criada automaticamente ao receber a primeira mensagem.`);
+
+      // Se houver companion_enc_static nas credenciais, atualize o storage
+      if (this.authState.creds.companionKey) {
+        signalStore.updateCompanionKey(this.authState.creds.companionKey);
+      }
+
+    } catch (error) {
+      console.error('❌ Erro ao criar sessão inicial:', error);
+      // Não falha o pareamento se não conseguir criar a sessão inicial
+      // A sessão será criada automaticamente na primeira mensagem recebida
     }
   }
 
@@ -1342,21 +1535,46 @@ export class WebSocketClient extends EventEmitter {
   }
 
   /**
+   * Propriedade para controlar o debounce do passive IQ
+   */
+  private passiveIqSentAt: number = 0;
+
+  /**
    * Envia passive IQ seguindo padrão Baileys
    */
   private async sendPassiveIq(tag: 'passive' | 'active'): Promise<void> {
+    // Estrutura conforme recomendação: <iq type="set" to="s.whatsapp.net"><passive><active/></passive></iq>
+    const content =
+      tag === 'active'
+        ? [{ tag: 'passive', attrs: {}, content: [{ tag: 'active', attrs: {} }] }]
+        : [{ tag: 'passive', attrs: {} }];
+
     const node = {
       tag: 'iq',
       attrs: {
         to: 's.whatsapp.net',
-        xmlns: 'passive',
         type: 'set'
       },
-      content: [{ tag, attrs: {} }]
+      content
     };
 
-    console.log(`📤 Enviando passive IQ: ${tag}`);
+    console.debug(`📤 Enviando passive IQ: ${tag}`);
     await this.sendNode(node);
+  }
+  
+  /**
+   * Envia passive IQ com debounce para evitar múltiplos envios
+   */
+  private async maybeSendPassiveActive(): Promise<void> {
+    const now = Date.now();
+    if (now - this.passiveIqSentAt < 5000) {
+      console.debug('⏱️ Passive IQ ignorado (debounce ativo)');
+      return;
+    }
+    
+    await this.sendPassiveIq('active');
+    this.passiveIqSentAt = now;
+    console.log('📡 Passive IQ <active/> enviado com debounce');
   }
 
   /**
@@ -1381,13 +1599,23 @@ export class WebSocketClient extends EventEmitter {
         // Reconecta usando as credenciais existentes
         await this.connect();
 
-        // Após reconectar, emite evento de atualização de conexão
-        this.emit('connection.update', {
-          connection: 'open',
-          isOnline: true
-        });
-
         console.log(`✅ Reconexão bem-sucedida (tentativa ${this.reconnectAttempts})`);
+
+        // Reativar canal de mensagens imediatamente após reconectar
+        // mesmo que o evento 'CB:success' não seja disparado em alguns fluxos
+        try {
+          if (this.authState?.creds?.registered && this.noiseHandler?.isFinished()) {
+            console.log('📡 [Reconnect] Reenviando presença + passive IQ');
+            await this.sendNode({
+              tag: 'presence',
+              attrs: { name: 'desktop', type: 'available' }
+            });
+            await this.maybeSendPassiveActive();
+            console.log('✅ Presença + passive IQ reenviados (reconexão)');
+          }
+        } catch (err) {
+          console.warn('⚠️ Falha ao reenviar presença na reconexão:', err);
+        }
 
         // Reset contador de tentativas após sucesso
         this.reconnectAttempts = 0;
